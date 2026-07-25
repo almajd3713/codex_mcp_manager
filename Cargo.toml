@@ -1,0 +1,22 @@
+[package]
+name = "codex-mcp-manager"
+version = "0.1.0"
+edition = "2024"
+description = "A small TUI for launching Codex with MCP-focused configuration profiles"
+license = "MIT"
+
+[[bin]]
+name = "codex-mcp"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4.5", features = ["derive"] }
+crossterm = "0.28"
+ratatui = "0.29"
+tempfile = "3.20"
+thiserror = "2.0"
+toml_edit = "0.22"
+
+[profile.release]
+lto = "thin"
+strip = true
