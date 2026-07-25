@@ -4,6 +4,8 @@
 native Codex configuration profiles and launching Codex with one of those
 profiles.
 
+I've slopped this because the other tools weren't as minimal as I wanted / didn't work with codex cli. Judge me as you like lol
+
 It does not introduce another profile format. Codex loads its base
 `$CODEX_HOME/config.toml` and overlays
 `$CODEX_HOME/<profile>.config.toml`; this tool reads the same files and only
