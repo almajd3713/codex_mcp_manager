@@ -51,6 +51,7 @@ Profile picker:
 - `e`: edit MCP states
 - `r`: rename a profile
 - `d`: move a profile to the recovery directory
+- `m`: open the MCP server inventory
 - `j`/`k` or arrow keys: navigate
 - `q` or `Esc`: quit
 
@@ -60,15 +61,40 @@ Profile editor:
 - `s`: save
 - `Esc`: discard the in-memory changes
 
+MCP inventory:
+
+- `n`: add a local stdio or remote HTTP server
+- `v`: ask Codex to validate the current configuration
+- `Esc`: return to profiles
+
+The add-server wizard collects:
+
+- A safe server name
+- Local executable, shell-style argument list, optional working directory,
+  and inherited environment-variable names; or
+- Remote HTTP URL and an optional bearer-token environment-variable name
+- Profiles in which the new server should be enabled
+
+New definitions are always written to `config.toml` with `enabled = false`.
+The tool then writes explicit `enabled = true` overrides only to the profiles
+selected in the wizard. This prevents a newly added server from silently
+appearing in Base or unrelated profiles.
+
 `Inherited` means the profile has no `enabled` override for that server. The
 effective state then comes from `config.toml`; if neither layer contains an
 `enabled` value, Codex's default is enabled.
 
 ## Safety and scope
 
-- Base MCP definitions are read-only. Commands, arguments, URLs, headers, and
-  environment values are never rendered by the TUI.
+- Existing commands, arguments, URLs, headers, and environment values are
+  never rendered by inventory or profile screens. Values typed into the
+  add-server wizard are visible only while entering them.
+- The wizard accepts environment-variable names rather than secret values.
+  HTTP bearer tokens should use `bearer_token_env_var`; stdio servers should
+  inherit named variables through `env_vars`.
 - Profile changes preserve unrelated settings and TOML comments.
+- Adding a server preserves unrelated base settings and comments and uses the
+  same atomic-write protections as profile edits.
 - Saves use a same-directory temporary file and atomic rename. A save is
   rejected if another process changed the profile after it was opened.
 - New profile files use user-only permissions on Unix.
@@ -77,9 +103,9 @@ effective state then comes from `config.toml`; if neither layer contains an
 - Malformed profiles are shown as invalid and cannot be edited or launched by
   the manager until repaired externally.
 
-Adding or removing MCP server definitions and performing OAuth login/logout
-remain the responsibility of `codex mcp`. Plugin-bundled MCP servers and native
-Windows are outside the initial release.
+Editing, renaming, or removing existing server definitions and performing
+OAuth login/logout remain the responsibility of `codex mcp`. Plugin-bundled
+MCP servers and native Windows are outside the initial release.
 
 ## Development
 
@@ -88,4 +114,3 @@ cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 cargo test
 ```
-

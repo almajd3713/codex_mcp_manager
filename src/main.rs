@@ -27,7 +27,7 @@ fn main() -> ExitCode {
     let mut launch_error = None;
 
     loop {
-        match app::run(&store, launch_error.take()) {
+        match app::run(&store, &cli.codex_bin, launch_error.take()) {
             Ok(app::Outcome::Quit) => return ExitCode::SUCCESS,
             Ok(app::Outcome::Launch(target)) => {
                 let error = launcher::launch(&cli.codex_bin, &codex_home, &target, &cli.codex_args);

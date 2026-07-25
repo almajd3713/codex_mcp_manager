@@ -7,7 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use tempfile::NamedTempFile;
 use thiserror::Error;
-use toml_edit::{DocumentMut, Item, Table, value};
+use toml_edit::{Array, DocumentMut, Item, Table, Value, value};
 
 const PROFILE_SUFFIX: &str = ".config.toml";
 const TRASH_DIR: &str = ".codex-mcp-trash";
@@ -36,6 +36,13 @@ pub enum ServerOrigin {
     OverrideOnly,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TransportKind {
+    Stdio,
+    Http,
+    Invalid,
+}
+
 #[derive(Clone, Debug)]
 pub struct ServerView {
     pub name: String,
@@ -43,6 +50,7 @@ pub struct ServerView {
     pub effective_enabled: bool,
     pub inherited_enabled: bool,
     pub origin: ServerOrigin,
+    pub transport: TransportKind,
     pub valid: bool,
 }
 
@@ -68,15 +76,36 @@ impl ProfileRecord {
 
 #[derive(Clone, Debug)]
 pub struct Catalog {
+    pub base_fingerprint: Fingerprint,
     pub base_servers: Vec<ServerView>,
     pub profiles: Vec<ProfileRecord>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ServerDefinition {
+    Stdio {
+        command: String,
+        args: Vec<String>,
+        cwd: Option<String>,
+        env_vars: Vec<String>,
+    },
+    Http {
+        url: String,
+        bearer_token_env_var: Option<String>,
+    },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NewServer {
+    pub name: String,
+    pub definition: ServerDefinition,
 }
 
 #[derive(Clone, Debug)]
 struct ServerFacts {
     enabled: Option<bool>,
     enabled_is_valid: bool,
-    has_definition: bool,
+    transport: TransportKind,
 }
 
 #[derive(Debug, Error)]
@@ -95,6 +124,14 @@ pub enum StoreError {
     ProfileMissing(String),
     #[error("profile '{0}' changed on disk; reload before saving")]
     ConcurrentChange(String),
+    #[error("base config changed on disk; reload before adding the server")]
+    BaseConcurrentChange,
+    #[error("MCP server name must contain only letters, numbers, hyphens, and underscores")]
+    InvalidServerName,
+    #[error("MCP server '{0}' already exists in the base config")]
+    ServerExists(String),
+    #[error("invalid MCP server: {0}")]
+    InvalidServer(String),
     #[error("could not write {path}: {source}")]
     Write { path: PathBuf, source: io::Error },
 }
@@ -118,12 +155,14 @@ impl ConfigStore {
         let base_doc = read_optional_document(&base_path)?;
         let base_facts = extract_server_facts(&base_doc.document, &base_path)?;
         let base_servers = base_views(&base_facts);
+        let base_fingerprint = base_doc.fingerprint;
 
         let mut profiles = Vec::new();
         let entries = match fs::read_dir(&self.home) {
             Ok(entries) => entries,
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
                 return Ok(Catalog {
+                    base_fingerprint,
                     base_servers,
                     profiles,
                 });
@@ -172,9 +211,62 @@ impl ConfigStore {
         profiles.sort_by(|left, right| left.name.cmp(&right.name));
 
         Ok(Catalog {
+            base_fingerprint,
             base_servers,
             profiles,
         })
+    }
+
+    pub fn add_server_and_assign(
+        &self,
+        server: &NewServer,
+        expected_base: Fingerprint,
+        assignments: &[(String, Fingerprint)],
+    ) -> Result<Vec<String>, StoreError> {
+        validate_new_server(server)?;
+        let base_path = self.home.join("config.toml");
+        let loaded = read_optional_document(&base_path)?;
+        if loaded.fingerprint != expected_base {
+            return Err(StoreError::BaseConcurrentChange);
+        }
+        let existing = extract_server_facts(&loaded.document, &base_path)?;
+        if existing.contains_key(&server.name) {
+            return Err(StoreError::ServerExists(server.name.clone()));
+        }
+
+        let home_already_existed = self.home.exists();
+        fs::create_dir_all(&self.home).map_err(|source| StoreError::Write {
+            path: self.home.clone(),
+            source,
+        })?;
+        if !home_already_existed {
+            set_private_dir_permissions(&self.home)?;
+        }
+
+        let mut document = loaded.document;
+        insert_server_definition(&mut document, server, &base_path)?;
+        let rendered = document.to_string();
+
+        let current = read_optional_document(&base_path)?;
+        if current.fingerprint != expected_base {
+            return Err(StoreError::BaseConcurrentChange);
+        }
+        let permissions = fs::metadata(&base_path)
+            .ok()
+            .map(|metadata| metadata.permissions());
+        atomic_write(&base_path, &rendered, permissions)?;
+
+        let mut failed_profiles = Vec::new();
+        for (profile_name, fingerprint) in assignments {
+            let states = BTreeMap::from([(server.name.clone(), OverrideState::Enabled)]);
+            if self
+                .save_profile_states(profile_name, *fingerprint, &states)
+                .is_err()
+            {
+                failed_profiles.push(profile_name.clone());
+            }
+        }
+        Ok(failed_profiles)
     }
 
     pub fn create_profile(&self, name: &str) -> Result<(), StoreError> {
@@ -361,7 +453,11 @@ fn extract_server_facts(
             ServerFacts {
                 enabled,
                 enabled_is_valid,
-                has_definition: server.contains_key("command") || server.contains_key("url"),
+                transport: match (server.contains_key("command"), server.contains_key("url")) {
+                    (true, false) => TransportKind::Stdio,
+                    (false, true) => TransportKind::Http,
+                    _ => TransportKind::Invalid,
+                },
             },
         );
     }
@@ -375,12 +471,13 @@ fn base_views(base: &BTreeMap<String, ServerFacts>) -> Vec<ServerView> {
             state: OverrideState::Inherited,
             effective_enabled: facts.enabled.unwrap_or(true),
             inherited_enabled: facts.enabled.unwrap_or(true),
-            origin: if facts.has_definition {
+            origin: if facts.transport != TransportKind::Invalid {
                 ServerOrigin::Base
             } else {
                 ServerOrigin::OverrideOnly
             },
-            valid: facts.enabled_is_valid && facts.has_definition,
+            transport: facts.transport,
+            valid: facts.enabled_is_valid && facts.transport != TransportKind::Invalid,
         })
         .collect()
 }
@@ -408,8 +505,10 @@ fn merge_server_views(
                 None => OverrideState::Inherited,
             };
             let effective_enabled = explicit.unwrap_or(inherited_enabled);
-            let base_definition = base_facts.is_some_and(|facts| facts.has_definition);
-            let profile_definition = profile_facts.is_some_and(|facts| facts.has_definition);
+            let base_definition =
+                base_facts.is_some_and(|facts| facts.transport != TransportKind::Invalid);
+            let profile_definition =
+                profile_facts.is_some_and(|facts| facts.transport != TransportKind::Invalid);
             let enabled_valid = base_facts.is_none_or(|facts| facts.enabled_is_valid)
                 && profile_facts.is_none_or(|facts| facts.enabled_is_valid);
             let origin = if base_definition {
@@ -419,6 +518,15 @@ fn merge_server_views(
             } else {
                 ServerOrigin::OverrideOnly
             };
+            let transport = base_facts
+                .map(|facts| facts.transport)
+                .filter(|transport| *transport != TransportKind::Invalid)
+                .or_else(|| {
+                    profile_facts
+                        .map(|facts| facts.transport)
+                        .filter(|transport| *transport != TransportKind::Invalid)
+                })
+                .unwrap_or(TransportKind::Invalid);
 
             ServerView {
                 name,
@@ -426,6 +534,7 @@ fn merge_server_views(
                 effective_enabled,
                 inherited_enabled,
                 origin,
+                transport,
                 valid: enabled_valid && (base_definition || profile_definition),
             }
         })
@@ -458,7 +567,9 @@ fn set_server_override(
     }
 
     if document.get("mcp_servers").is_none() {
-        document["mcp_servers"] = Item::Table(Table::new());
+        let mut table = Table::new();
+        table.set_implicit(true);
+        document["mcp_servers"] = Item::Table(table);
     }
     let mcp_servers = document
         .get_mut("mcp_servers")
@@ -479,6 +590,141 @@ fn set_server_override(
         })?;
     server["enabled"] = value(state == OverrideState::Enabled);
     Ok(())
+}
+
+fn insert_server_definition(
+    document: &mut DocumentMut,
+    server: &NewServer,
+    path: &Path,
+) -> Result<(), StoreError> {
+    if document.get("mcp_servers").is_none() {
+        let mut table = Table::new();
+        table.set_implicit(true);
+        document["mcp_servers"] = Item::Table(table);
+    }
+    let mcp_servers = document
+        .get_mut("mcp_servers")
+        .and_then(Item::as_table_mut)
+        .ok_or_else(|| StoreError::InvalidConfig {
+            path: path.to_owned(),
+            message: "mcp_servers must be a table".to_owned(),
+        })?;
+    if mcp_servers.contains_key(&server.name) {
+        return Err(StoreError::ServerExists(server.name.clone()));
+    }
+
+    let mut table = Table::new();
+    match &server.definition {
+        ServerDefinition::Stdio {
+            command,
+            args,
+            cwd,
+            env_vars,
+        } => {
+            table["command"] = value(command.clone());
+            if !args.is_empty() {
+                table["args"] = Item::Value(Value::Array(string_array(args)));
+            }
+            if let Some(cwd) = cwd {
+                table["cwd"] = value(cwd.clone());
+            }
+            if !env_vars.is_empty() {
+                table["env_vars"] = Item::Value(Value::Array(string_array(env_vars)));
+            }
+        }
+        ServerDefinition::Http {
+            url,
+            bearer_token_env_var,
+        } => {
+            table["url"] = value(url.clone());
+            if let Some(variable) = bearer_token_env_var {
+                table["bearer_token_env_var"] = value(variable.clone());
+            }
+        }
+    }
+    table["enabled"] = value(false);
+    mcp_servers.insert(&server.name, Item::Table(table));
+    Ok(())
+}
+
+fn string_array(values: &[String]) -> Array {
+    let mut array = Array::new();
+    for value in values {
+        array.push(value.as_str());
+    }
+    array
+}
+
+pub fn validate_new_server(server: &NewServer) -> Result<(), StoreError> {
+    validate_server_name(&server.name)?;
+    match &server.definition {
+        ServerDefinition::Stdio {
+            command,
+            cwd,
+            env_vars,
+            ..
+        } => {
+            if command.trim().is_empty() {
+                return Err(StoreError::InvalidServer(
+                    "stdio command cannot be empty".to_owned(),
+                ));
+            }
+            if cwd.as_ref().is_some_and(|cwd| cwd.trim().is_empty()) {
+                return Err(StoreError::InvalidServer(
+                    "working directory cannot be blank".to_owned(),
+                ));
+            }
+            for variable in env_vars {
+                validate_env_var(variable)?;
+            }
+        }
+        ServerDefinition::Http {
+            url,
+            bearer_token_env_var,
+        } => {
+            let trimmed = url.trim();
+            let endpoint = trimmed.split_once("://").map(|(_, endpoint)| endpoint);
+            if !(trimmed.starts_with("https://") || trimmed.starts_with("http://"))
+                || trimmed.contains(char::is_whitespace)
+                || endpoint.is_none_or(|endpoint| endpoint.is_empty() || endpoint.starts_with('/'))
+            {
+                return Err(StoreError::InvalidServer(
+                    "HTTP URL must contain a host, start with http:// or https://, and contain no spaces"
+                        .to_owned(),
+                ));
+            }
+            if let Some(variable) = bearer_token_env_var {
+                validate_env_var(variable)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+pub fn validate_server_name(name: &str) -> Result<(), StoreError> {
+    if !name.is_empty()
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+    {
+        Ok(())
+    } else {
+        Err(StoreError::InvalidServerName)
+    }
+}
+
+fn validate_env_var(name: &str) -> Result<(), StoreError> {
+    let mut bytes = name.bytes();
+    let valid_start = bytes
+        .next()
+        .is_some_and(|byte| byte.is_ascii_alphabetic() || byte == b'_');
+    if valid_start && bytes.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_') {
+        Ok(())
+    } else {
+        Err(StoreError::InvalidServer(format!(
+            "'{name}' is not a valid environment variable name"
+        )))
+    }
 }
 
 fn atomic_write(
@@ -585,7 +831,10 @@ mod tests {
 
     use tempfile::tempdir;
 
-    use super::{ConfigStore, OverrideState, ServerOrigin, StoreError};
+    use super::{
+        ConfigStore, NewServer, OverrideState, ServerDefinition, ServerOrigin, StoreError,
+        TransportKind, validate_new_server,
+    };
 
     fn store_with_base(base: &str) -> (tempfile::TempDir, ConfigStore) {
         let temp = tempdir().unwrap();
@@ -725,5 +974,115 @@ url = "https://example.test/mcp"
         let error = catalog.profiles[0].error.as_deref().unwrap();
         assert!(!error.contains("DO_NOT_ECHO"));
         assert!(error.contains("could not parse TOML"));
+    }
+
+    #[test]
+    fn adds_stdio_server_disabled_and_assigns_selected_profiles() {
+        let (temp, store) = store_with_base("# preserve base comment\n");
+        store.create_profile("work").unwrap();
+        store.create_profile("personal").unwrap();
+        let catalog = store.load_catalog().unwrap();
+        let work = catalog
+            .profiles
+            .iter()
+            .find(|profile| profile.name == "work")
+            .unwrap();
+        let server = NewServer {
+            name: "local-tools".to_owned(),
+            definition: ServerDefinition::Stdio {
+                command: "npx".to_owned(),
+                args: vec!["-y".to_owned(), "@example/mcp".to_owned()],
+                cwd: Some("/tmp/work".to_owned()),
+                env_vars: vec!["EXAMPLE_TOKEN".to_owned()],
+            },
+        };
+
+        let failed = store
+            .add_server_and_assign(
+                &server,
+                catalog.base_fingerprint,
+                &[("work".to_owned(), work.fingerprint)],
+            )
+            .unwrap();
+
+        assert!(failed.is_empty());
+        let base = fs::read_to_string(temp.path().join("config.toml")).unwrap();
+        assert!(base.contains("# preserve base comment"));
+        assert!(base.contains("[mcp_servers.local-tools]"));
+        assert!(base.contains("command = \"npx\""));
+        assert!(base.contains("args = [\"-y\", \"@example/mcp\"]"));
+        assert!(base.contains("env_vars = [\"EXAMPLE_TOKEN\"]"));
+        assert!(base.contains("enabled = false"));
+
+        let updated = store.load_catalog().unwrap();
+        assert_eq!(updated.base_servers[0].transport, TransportKind::Stdio);
+        assert!(!updated.base_servers[0].effective_enabled);
+        let work = updated
+            .profiles
+            .iter()
+            .find(|profile| profile.name == "work")
+            .unwrap();
+        let personal = updated
+            .profiles
+            .iter()
+            .find(|profile| profile.name == "personal")
+            .unwrap();
+        assert!(work.servers[0].effective_enabled);
+        assert!(!personal.servers[0].effective_enabled);
+    }
+
+    #[test]
+    fn adds_http_server_with_environment_backed_bearer_token() {
+        let (temp, store) = store_with_base("");
+        let catalog = store.load_catalog().unwrap();
+        let server = NewServer {
+            name: "remote".to_owned(),
+            definition: ServerDefinition::Http {
+                url: "https://mcp.example.test/api".to_owned(),
+                bearer_token_env_var: Some("REMOTE_MCP_TOKEN".to_owned()),
+            },
+        };
+
+        store
+            .add_server_and_assign(&server, catalog.base_fingerprint, &[])
+            .unwrap();
+
+        let base = fs::read_to_string(temp.path().join("config.toml")).unwrap();
+        assert!(base.contains("url = \"https://mcp.example.test/api\""));
+        assert!(base.contains("bearer_token_env_var = \"REMOTE_MCP_TOKEN\""));
+        assert!(!base.contains("token-value"));
+        assert_eq!(
+            store.load_catalog().unwrap().base_servers[0].transport,
+            TransportKind::Http
+        );
+    }
+
+    #[test]
+    fn rejects_duplicate_and_invalid_server_definitions() {
+        let (_temp, store) =
+            store_with_base("[mcp_servers.docs]\nurl = \"https://example.test\"\n");
+        let catalog = store.load_catalog().unwrap();
+        let duplicate = NewServer {
+            name: "docs".to_owned(),
+            definition: ServerDefinition::Http {
+                url: "https://other.test".to_owned(),
+                bearer_token_env_var: None,
+            },
+        };
+        assert!(matches!(
+            store.add_server_and_assign(&duplicate, catalog.base_fingerprint, &[]),
+            Err(StoreError::ServerExists(_))
+        ));
+
+        let invalid = NewServer {
+            name: "bad name".to_owned(),
+            definition: ServerDefinition::Stdio {
+                command: String::new(),
+                args: Vec::new(),
+                cwd: None,
+                env_vars: vec!["NOT-VALID".to_owned()],
+            },
+        };
+        assert!(validate_new_server(&invalid).is_err());
     }
 }
