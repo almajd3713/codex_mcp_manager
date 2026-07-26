@@ -25,6 +25,16 @@ impl<'a> App<'a> {
             KeyCode::Char('n') => {
                 self.screen = Screen::AddServer(AddWizard::new(&self.catalog));
             }
+            KeyCode::Char('e') => {
+                if let Some(server) = self.catalog.base_servers.get(selected) {
+                    self.screen = Screen::ConfirmEdit {
+                        server_name: server.name.clone(),
+                        selected,
+                    };
+                } else {
+                    self.screen = Screen::Inventory { selected };
+                }
+            }
             KeyCode::Char('v') => {
                 self.validate_with_codex();
                 self.screen = Screen::Inventory { selected };
@@ -41,7 +51,7 @@ impl<'a> App<'a> {
             }
             KeyCode::Char('?') => {
                 self.notice = Some(
-                    "n add server • i inspect TOML • v validate • Esc return to profiles"
+                    "n add server • e edit server • i inspect TOML • v validate • Esc return to profiles"
                         .to_owned(),
                 );
                 self.screen = Screen::Inventory { selected };

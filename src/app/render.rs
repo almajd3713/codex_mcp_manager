@@ -7,8 +7,8 @@ use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragra
 use crate::config::{OverrideState, ServerOrigin, TransportKind};
 
 use super::{
-    AddStep, AddWizard, App, EditorState, InputState, InspectBack, InspectorState, Screen,
-    WizardTransport,
+    AddStep, AddWizard, App, EditWizard, EditorState, InputState, InspectBack, InspectorState,
+    Screen, WizardTransport,
 };
 
 pub(super) fn render(frame: &mut Frame<'_>, app: &App<'_>) {
@@ -44,6 +44,9 @@ pub(super) fn render(frame: &mut Frame<'_>, app: &App<'_>) {
         Screen::AddServer(wizard) => {
             render_add_server(frame, chunks[1], wizard);
         }
+        Screen::EditServer(wizard) => {
+            render_edit_server(frame, chunks[1], wizard);
+        }
         Screen::ConfirmInspect { back, .. } => match back {
             InspectBack::Profiles => {
                 render_profiles(frame, chunks[1], app);
@@ -52,6 +55,9 @@ pub(super) fn render(frame: &mut Frame<'_>, app: &App<'_>) {
                 render_inventory(frame, chunks[1], app, *selected);
             }
         },
+        Screen::ConfirmEdit { selected, .. } => {
+            render_inventory(frame, chunks[1], app, *selected);
+        }
         Screen::Inspector(inspector) => {
             render_inspector(frame, chunks[1], inspector);
         }
@@ -64,7 +70,7 @@ pub(super) fn render(frame: &mut Frame<'_>, app: &App<'_>) {
         }
         Screen::Editor(_) => "↑/↓ navigate  Space cycle state  s save  Esc cancel",
         Screen::Inventory { .. } => {
-            "↑/↓ navigate  n add server  i inspect TOML  v validate  Esc profiles"
+            "↑/↓ navigate  n add server  e edit  i inspect TOML  v validate  Esc profiles"
         }
         Screen::AddServer(wizard) if wizard.step == AddStep::AssignProfiles => {
             "↑/↓ navigate  Space toggle profile  s/Enter save  Esc cancel"
@@ -73,9 +79,11 @@ pub(super) fn render(frame: &mut Frame<'_>, app: &App<'_>) {
             "↑/↓ or s/h choose transport  Enter continue  Esc cancel"
         }
         Screen::AddServer(_) => "Enter continue  Ctrl-U clear  Esc cancel",
+        Screen::EditServer(_) => "Enter continue/save  Ctrl-U clear field  Esc cancel",
         Screen::Input(_) => "Enter confirm  Ctrl-U clear  Esc cancel",
         Screen::ConfirmDelete { .. } => "y move to trash  n/Esc cancel",
         Screen::ConfirmInspect { .. } => "y show raw TOML  n/Esc cancel",
+        Screen::ConfirmEdit { .. } => "y load values into editor  n/Esc cancel",
         Screen::Inspector(_) => "↑/↓ PgUp/PgDn scroll  ←/→ horizontal  Home/End  q/Esc back",
     };
     frame.render_widget(
@@ -92,6 +100,9 @@ pub(super) fn render(frame: &mut Frame<'_>, app: &App<'_>) {
         }
         Screen::ConfirmInspect { .. } => {
             render_inspect_confirmation(frame, area);
+        }
+        Screen::ConfirmEdit { server_name, .. } => {
+            render_edit_confirmation(frame, area, server_name);
         }
         _ => {}
     }
@@ -184,6 +195,75 @@ fn render_add_server(frame: &mut Frame<'_>, area: Rect, wizard: &AddWizard) {
         }
         _ => render_wizard_input(frame, area, wizard),
     }
+}
+
+fn render_edit_server(frame: &mut Frame<'_>, area: Rect, wizard: &EditWizard) {
+    let (title, help) = match wizard.step {
+        AddStep::Command => (
+            " Local server — executable ",
+            "Existing value is prefilled. Use Ctrl-U to replace it.",
+        ),
+        AddStep::Arguments => (
+            " Local server — arguments (optional) ",
+            "Shell-style quoting is supported. Unknown TOML fields are preserved.",
+        ),
+        AddStep::WorkingDirectory => (
+            " Local server — working directory (optional) ",
+            "Clear to inherit the Codex working directory.",
+        ),
+        AddStep::EnvironmentVariables => (
+            " Local server — inherited environment variables (optional) ",
+            "Comma- or space-separated names; Enter validates and saves.",
+        ),
+        AddStep::Url => (
+            " Remote server — HTTP URL ",
+            "Existing value is prefilled. Use Ctrl-U to replace it.",
+        ),
+        AddStep::BearerEnvironmentVariable => (
+            " Remote server — bearer-token environment variable (optional) ",
+            "Enter a variable name, never a token value; Enter validates and saves.",
+        ),
+        AddStep::Name | AddStep::Transport | AddStep::AssignProfiles => unreachable!(),
+    };
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Min(3),
+            Constraint::Length(3),
+            Constraint::Length(2),
+        ])
+        .split(area);
+    frame.render_widget(
+        Paragraph::new(format!(
+            "Editing '{}'. Transport, name, Base enablement, and advanced fields remain unchanged.",
+            wizard.name
+        ))
+        .style(Style::default().fg(Color::DarkGray))
+        .alignment(Alignment::Center),
+        chunks[0],
+    );
+    frame.render_widget(
+        Paragraph::new(wizard.input.as_str())
+            .block(
+                Block::default()
+                    .title(format!(" Edit '{0}' —{title}", wizard.name))
+                    .borders(Borders::ALL),
+            )
+            .wrap(Wrap { trim: false }),
+        chunks[1],
+    );
+    frame.render_widget(
+        Paragraph::new(help)
+            .style(Style::default().fg(Color::DarkGray))
+            .alignment(Alignment::Center),
+        chunks[2],
+    );
+    let cursor_x = chunks[1]
+        .x
+        .saturating_add(1)
+        .saturating_add(wizard.input.len() as u16)
+        .min(chunks[1].right().saturating_sub(2));
+    frame.set_cursor_position((cursor_x, chunks[1].y.saturating_add(1)));
 }
 
 fn render_transport_choice(frame: &mut Frame<'_>, area: Rect, wizard: &AddWizard) {
@@ -534,6 +614,24 @@ fn render_inspect_confirmation(frame: &mut Frame<'_>, area: Rect) {
         Paragraph::new(
             "Raw source may contain commands, URLs, headers, or credentials. Show it? (y/N)",
         )
+        .block(
+            Block::default()
+                .title(" Sensitive configuration ")
+                .borders(Borders::ALL),
+        )
+        .wrap(Wrap { trim: true })
+        .alignment(Alignment::Center),
+        popup,
+    );
+}
+
+fn render_edit_confirmation(frame: &mut Frame<'_>, area: Rect, server_name: &str) {
+    let popup = centered_rect(area, 78, 9);
+    frame.render_widget(Clear, popup);
+    frame.render_widget(
+        Paragraph::new(format!(
+            "Editing '{server_name}' loads its command, arguments, URL, and environment-variable names into visible fields. These may contain sensitive data. Continue? (y/N)"
+        ))
         .block(
             Block::default()
                 .title(" Sensitive configuration ")

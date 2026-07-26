@@ -4,7 +4,7 @@ use std::fs;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use tempfile::tempdir;
 
-use super::{App, Outcome, Screen, parse_shell_words};
+use super::{App, Outcome, Screen, format_shell_words, parse_shell_words};
 use crate::config::ConfigStore;
 use crate::launcher::LaunchTarget;
 
@@ -95,6 +95,21 @@ fn shell_words_support_quotes_and_empty_arguments() {
 }
 
 #[test]
+fn formatted_shell_words_round_trip_exactly() {
+    let words = vec![
+        "--flag".to_owned(),
+        "two words".to_owned(),
+        String::new(),
+        "it's-safe".to_owned(),
+        r#"slash\value"#.to_owned(),
+    ];
+    assert_eq!(
+        parse_shell_words(&format_shell_words(&words)).unwrap(),
+        words
+    );
+}
+
+#[test]
 fn add_server_wizard_creates_disabled_base_definition_and_profile_override() {
     let temp = tempdir().unwrap();
     fs::write(temp.path().join("config.toml"), "").unwrap();
@@ -156,4 +171,61 @@ fn inspection_requires_confirmation_and_returns_to_origin() {
 
     app.handle_key(key(KeyCode::Esc)).unwrap();
     assert!(matches!(app.screen, Screen::Profiles));
+}
+
+#[test]
+fn edit_server_flow_requires_confirmation_and_updates_prefilled_fields() {
+    let temp = tempdir().unwrap();
+    fs::write(
+        temp.path().join("config.toml"),
+        concat!(
+            "[mcp_servers.local]\n",
+            "command = \"old-command\"\n",
+            "args = [\"--old\"]\n",
+            "cwd = \"/old\"\n",
+            "env_vars = [\"OLD_TOKEN\"]\n",
+            "enabled = false\n",
+            "startup_timeout_sec = 30\n",
+        ),
+    )
+    .unwrap();
+    let store = ConfigStore::new(temp.path().to_owned());
+    let mut app = App::new(&store, OsStr::new("codex"), None).unwrap();
+
+    app.handle_key(key(KeyCode::Char('m'))).unwrap();
+    app.handle_key(key(KeyCode::Char('e'))).unwrap();
+    assert!(matches!(app.screen, Screen::ConfirmEdit { .. }));
+    app.handle_key(key(KeyCode::Char('y'))).unwrap();
+    let Screen::EditServer(wizard) = &app.screen else {
+        panic!("expected server editor");
+    };
+    assert_eq!(wizard.input, "old-command");
+
+    let clear = KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL);
+    app.handle_key(clear).unwrap();
+    for character in "new-command".chars() {
+        app.handle_key(key(KeyCode::Char(character))).unwrap();
+    }
+    app.handle_key(key(KeyCode::Enter)).unwrap();
+    app.handle_key(clear).unwrap();
+    for character in r#""two words" --new"#.chars() {
+        app.handle_key(key(KeyCode::Char(character))).unwrap();
+    }
+    app.handle_key(key(KeyCode::Enter)).unwrap();
+    app.handle_key(clear).unwrap();
+    app.handle_key(key(KeyCode::Enter)).unwrap();
+    app.handle_key(clear).unwrap();
+    for character in "NEW_TOKEN".chars() {
+        app.handle_key(key(KeyCode::Char(character))).unwrap();
+    }
+    app.handle_key(key(KeyCode::Enter)).unwrap();
+
+    assert!(matches!(app.screen, Screen::Inventory { .. }));
+    let rendered = fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    assert!(rendered.contains("command = \"new-command\""));
+    assert!(rendered.contains("args = [\"two words\", \"--new\"]"));
+    assert!(rendered.contains("env_vars = [\"NEW_TOKEN\"]"));
+    assert!(!rendered.contains("cwd ="));
+    assert!(rendered.contains("enabled = false"));
+    assert!(rendered.contains("startup_timeout_sec = 30"));
 }

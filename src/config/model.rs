@@ -108,7 +108,7 @@ pub enum StoreError {
     ProfileMissing(String),
     #[error("profile '{0}' changed on disk; reload before saving")]
     ConcurrentChange(String),
-    #[error("base config changed on disk; reload before adding the server")]
+    #[error("base config changed on disk; reload before saving")]
     BaseConcurrentChange,
     #[error("MCP server name must contain only letters, numbers, hyphens, and underscores")]
     InvalidServerName,

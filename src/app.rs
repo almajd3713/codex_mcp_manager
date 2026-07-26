@@ -8,14 +8,15 @@ use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifier
 use thiserror::Error;
 
 use crate::config::{
-    Catalog, ConfigStore, Fingerprint, OverrideState, ProfileRecord, ServerView, StoreError,
-    validate_new_server, validate_server_name,
+    Catalog, ConfigStore, Fingerprint, NewServer, OverrideState, ProfileRecord, ServerView,
+    StoreError, validate_new_server, validate_server_name,
 };
 use crate::launcher::LaunchTarget;
 
 mod inventory;
 mod profiles;
 mod render;
+mod server_editor;
 mod terminal;
 mod wizard;
 
@@ -24,7 +25,10 @@ mod tests;
 
 use render::render;
 use terminal::Tui;
-use wizard::{AddStep, AddWizard, WizardTransport, nonempty, parse_env_vars, parse_shell_words};
+use wizard::{
+    AddStep, AddWizard, EditWizard, WizardTransport, format_shell_words, nonempty, parse_env_vars,
+    parse_shell_words,
+};
 
 const TICK_RATE: Duration = Duration::from_millis(250);
 
@@ -93,6 +97,7 @@ enum Screen {
         selected: usize,
     },
     AddServer(AddWizard),
+    EditServer(EditWizard),
     Input(InputState),
     ConfirmDelete {
         profile_name: String,
@@ -100,6 +105,10 @@ enum Screen {
     ConfirmInspect {
         target: InspectTarget,
         back: InspectBack,
+    },
+    ConfirmEdit {
+        server_name: String,
+        selected: usize,
     },
     Inspector(InspectorState),
 }
@@ -151,11 +160,16 @@ impl<'a> App<'a> {
             Screen::Editor(editor) => self.handle_editor_key(key, editor),
             Screen::Inventory { selected } => self.handle_inventory_key(key, selected),
             Screen::AddServer(wizard) => self.handle_add_server_key(key, wizard),
+            Screen::EditServer(wizard) => self.handle_edit_server_key(key, wizard),
             Screen::Input(input) => self.handle_input_key(key, input),
             Screen::ConfirmDelete { profile_name } => self.handle_delete_key(key, &profile_name),
             Screen::ConfirmInspect { target, back } => {
                 self.handle_inspect_confirmation(key, target, back)
             }
+            Screen::ConfirmEdit {
+                server_name,
+                selected,
+            } => self.handle_edit_confirmation(key, &server_name, selected),
             Screen::Inspector(inspector) => self.handle_inspector_key(key, inspector),
         }
     }

@@ -287,3 +287,122 @@ fn source_inspection_returns_native_profile_and_isolated_server_toml() {
     assert!(!server.contains("private-server"));
     assert!(!server.contains("DO_NOT_INCLUDE_ELSEWHERE"));
 }
+
+#[test]
+fn updates_stdio_server_without_losing_advanced_fields_or_enablement() {
+    let (temp, store) = store_with_base(concat!(
+        "# preserve base comment\n",
+        "[mcp_servers.local]\n",
+        "# preserve server comment\n",
+        "command = \"old-command\"\n",
+        "args = [\"--old\"]\n",
+        "cwd = \"/old\"\n",
+        "env_vars = [\"OLD_TOKEN\"]\n",
+        "enabled = true\n",
+        "startup_timeout_sec = 45\n\n",
+        "[mcp_servers.local.env]\n",
+        "LOG_LEVEL = \"debug\"\n",
+    ));
+    let catalog = store.load_catalog().unwrap();
+    let loaded = store.load_server_definition("local").unwrap();
+    assert!(matches!(loaded.definition, ServerDefinition::Stdio { .. }));
+    let updated = NewServer {
+        name: "local".to_owned(),
+        definition: ServerDefinition::Stdio {
+            command: "new-command".to_owned(),
+            args: Vec::new(),
+            cwd: None,
+            env_vars: vec!["NEW_TOKEN".to_owned()],
+        },
+    };
+
+    store
+        .update_server(&updated, catalog.base_fingerprint)
+        .unwrap();
+
+    let rendered = fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    assert!(rendered.contains("# preserve base comment"));
+    assert!(rendered.contains("# preserve server comment"));
+    assert!(rendered.contains("command = \"new-command\""));
+    assert!(rendered.contains("env_vars = [\"NEW_TOKEN\"]"));
+    assert!(!rendered.contains("args ="));
+    assert!(!rendered.contains("cwd ="));
+    assert!(rendered.contains("enabled = true"));
+    assert!(rendered.contains("startup_timeout_sec = 45"));
+    assert!(rendered.contains("[mcp_servers.local.env]"));
+    assert!(rendered.contains("LOG_LEVEL = \"debug\""));
+}
+
+#[test]
+fn updates_http_server_without_losing_headers() {
+    let (temp, store) = store_with_base(concat!(
+        "[mcp_servers.remote]\n",
+        "url = \"https://old.example.test/mcp\"\n",
+        "bearer_token_env_var = \"OLD_TOKEN\"\n",
+        "enabled = false\n\n",
+        "[mcp_servers.remote.http_headers]\n",
+        "X-Client = \"codex-mcp\"\n",
+    ));
+    let catalog = store.load_catalog().unwrap();
+    let updated = NewServer {
+        name: "remote".to_owned(),
+        definition: ServerDefinition::Http {
+            url: "https://new.example.test/mcp".to_owned(),
+            bearer_token_env_var: None,
+        },
+    };
+
+    store
+        .update_server(&updated, catalog.base_fingerprint)
+        .unwrap();
+
+    let rendered = fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    assert!(rendered.contains("url = \"https://new.example.test/mcp\""));
+    assert!(!rendered.contains("bearer_token_env_var"));
+    assert!(rendered.contains("enabled = false"));
+    assert!(rendered.contains("[mcp_servers.remote.http_headers]"));
+    assert!(rendered.contains("X-Client = \"codex-mcp\""));
+}
+
+#[test]
+fn server_update_refuses_stale_base_fingerprint() {
+    let (temp, store) = store_with_base("[mcp_servers.docs]\nurl = \"https://old.example.test\"\n");
+    let catalog = store.load_catalog().unwrap();
+    fs::write(
+        temp.path().join("config.toml"),
+        "[mcp_servers.docs]\nurl = \"https://external.example.test\"\n",
+    )
+    .unwrap();
+    let updated = NewServer {
+        name: "docs".to_owned(),
+        definition: ServerDefinition::Http {
+            url: "https://new.example.test".to_owned(),
+            bearer_token_env_var: None,
+        },
+    };
+
+    assert!(matches!(
+        store.update_server(&updated, catalog.base_fingerprint),
+        Err(StoreError::BaseConcurrentChange)
+    ));
+    assert!(
+        fs::read_to_string(temp.path().join("config.toml"))
+            .unwrap()
+            .contains("external.example.test")
+    );
+}
+
+#[test]
+fn guided_editor_rejects_non_string_arrays_without_echoing_values() {
+    let (_temp, store) = store_with_base(concat!(
+        "[mcp_servers.local]\n",
+        "command = \"server\"\n",
+        "env_vars = [{ name = \"DO_NOT_ECHO\" }]\n",
+    ));
+
+    let error = store.load_server_definition("local").unwrap_err();
+    let message = error.to_string();
+    assert!(message.contains("env_vars"));
+    assert!(message.contains("only strings"));
+    assert!(!message.contains("DO_NOT_ECHO"));
+}

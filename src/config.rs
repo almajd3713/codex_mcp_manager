@@ -10,6 +10,7 @@ use toml_edit::{Array, DocumentMut, Item, Table, Value, value};
 
 mod document;
 mod model;
+mod server;
 
 #[cfg(test)]
 mod tests;
@@ -21,6 +22,7 @@ pub use model::{
 };
 
 use document::*;
+use server::*;
 
 const PROFILE_SUFFIX: &str = ".config.toml";
 const TRASH_DIR: &str = ".codex-mcp-trash";
@@ -163,6 +165,42 @@ impl ConfigStore {
             }
         }
         Ok(failed_profiles)
+    }
+
+    pub fn load_server_definition(&self, name: &str) -> Result<NewServer, StoreError> {
+        validate_server_name(name)?;
+        let path = self.home.join("config.toml");
+        let loaded = read_optional_document(&path)?;
+        extract_server_definition(&loaded.document, name, &path)
+    }
+
+    pub fn update_server(
+        &self,
+        server: &NewServer,
+        expected_base: Fingerprint,
+    ) -> Result<(), StoreError> {
+        validate_new_server(server)?;
+        let path = self.home.join("config.toml");
+        let loaded = read_optional_document(&path)?;
+        if loaded.fingerprint != expected_base {
+            return Err(StoreError::BaseConcurrentChange);
+        }
+
+        let mut document = loaded.document;
+        update_server_definition(&mut document, server, &path)?;
+        let rendered = document.to_string();
+        if rendered.as_bytes() == loaded.raw.as_slice() {
+            return Ok(());
+        }
+
+        let current = read_optional_document(&path)?;
+        if current.fingerprint != expected_base {
+            return Err(StoreError::BaseConcurrentChange);
+        }
+        let permissions = fs::metadata(&path)
+            .ok()
+            .map(|metadata| metadata.permissions());
+        atomic_write(&path, &rendered, permissions)
     }
 
     pub fn inspect_base_source(&self) -> Result<String, StoreError> {

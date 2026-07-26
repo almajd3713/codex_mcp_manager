@@ -92,6 +92,84 @@ impl AddWizard {
     }
 }
 
+#[derive(Clone)]
+pub(super) struct EditWizard {
+    pub(super) step: AddStep,
+    pub(super) input: String,
+    pub(super) name: String,
+    pub(super) transport: WizardTransport,
+    pub(super) command: String,
+    pub(super) args: Vec<String>,
+    pub(super) cwd: Option<String>,
+    pub(super) env_vars: Vec<String>,
+    pub(super) url: String,
+    pub(super) bearer_token_env_var: Option<String>,
+    pub(super) expected_base: Fingerprint,
+    pub(super) selected: usize,
+}
+
+impl EditWizard {
+    pub(super) fn new(server: NewServer, expected_base: Fingerprint, selected: usize) -> Self {
+        match server.definition {
+            ServerDefinition::Stdio {
+                command,
+                args,
+                cwd,
+                env_vars,
+            } => Self {
+                step: AddStep::Command,
+                input: command.clone(),
+                name: server.name,
+                transport: WizardTransport::Stdio,
+                command,
+                args,
+                cwd,
+                env_vars,
+                url: String::new(),
+                bearer_token_env_var: None,
+                expected_base,
+                selected,
+            },
+            ServerDefinition::Http {
+                url,
+                bearer_token_env_var,
+            } => Self {
+                step: AddStep::Url,
+                input: url.clone(),
+                name: server.name,
+                transport: WizardTransport::Http,
+                command: String::new(),
+                args: Vec::new(),
+                cwd: None,
+                env_vars: Vec::new(),
+                url,
+                bearer_token_env_var,
+                expected_base,
+                selected,
+            },
+        }
+    }
+
+    pub(super) fn definition(&self) -> NewServer {
+        let definition = match self.transport {
+            WizardTransport::Stdio => ServerDefinition::Stdio {
+                command: self.command.clone(),
+                args: self.args.clone(),
+                cwd: self.cwd.clone(),
+                env_vars: self.env_vars.clone(),
+            },
+            WizardTransport::Http => ServerDefinition::Http {
+                url: self.url.clone(),
+                bearer_token_env_var: self.bearer_token_env_var.clone(),
+            },
+        };
+        NewServer {
+            name: self.name.clone(),
+            definition,
+        }
+    }
+}
+
 pub(super) fn nonempty(value: &str) -> Option<String> {
     if value.is_empty() {
         None
@@ -107,6 +185,14 @@ pub(super) fn parse_env_vars(input: &str) -> Vec<String> {
         .filter(|value| !value.is_empty())
         .map(str::to_owned)
         .collect()
+}
+
+pub(super) fn format_shell_words(words: &[String]) -> String {
+    words
+        .iter()
+        .map(|word| format!("'{}'", word.replace('\'', r#"'\''"#)))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 pub(super) fn parse_shell_words(input: &str) -> Result<Vec<String>, StoreError> {

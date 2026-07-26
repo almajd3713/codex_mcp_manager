@@ -9,7 +9,8 @@ I've slopped this because the other tools weren't as minimal as I wanted / didn'
 It does not introduce another profile format. Codex loads its base
 `$CODEX_HOME/config.toml` and overlays
 `$CODEX_HOME/<profile>.config.toml`; this tool reads the same files and only
-edits each MCP server's profile-level `enabled` value. See the official
+edits the native TOML definitions and each MCP server's profile-level
+`enabled` value. See the official
 [Codex profile documentation](https://learn.chatgpt.com/docs/config-file/config-advanced#profiles)
 and [configuration reference](https://learn.chatgpt.com/docs/config-file/config-reference#configtoml).
 
@@ -67,6 +68,7 @@ Profile editor:
 MCP inventory:
 
 - `n`: add a local stdio or remote HTTP server
+- `e`: edit the selected server's guided fields
 - `i`: inspect only the selected server's native TOML table
 - `v`: ask Codex to validate the current configuration
 - `Esc`: return to profiles
@@ -91,6 +93,13 @@ The tool then writes explicit `enabled = true` overrides only to the profiles
 selected in the wizard. This prevents a newly added server from silently
 appearing in Base or unrelated profiles.
 
+The server editor keeps the existing name and transport. For local stdio
+servers it updates the executable, arguments, optional working directory, and
+inherited environment-variable names. For remote servers it updates the URL
+and optional bearer-token environment-variable name. Existing values are
+prefilled; use `Ctrl-U` to clear a field before replacing it. The final field
+is saved with `Enter`.
+
 `Inherited` means the profile has no `enabled` override for that server. The
 effective state then comes from `config.toml`; if neither layer contains an
 `enabled` value, Codex's default is enabled.
@@ -98,25 +107,30 @@ effective state then comes from `config.toml`; if neither layer contains an
 ## Safety and scope
 
 - Existing commands, arguments, URLs, headers, and environment values are
-  never rendered by inventory or profile screens. Values typed into the
-  add-server wizard are visible only while entering them.
+  never rendered by inventory or profile screens. Inspecting TOML or loading
+  an existing server into the editor requires an explicit sensitive-data
+  confirmation.
 - The wizard accepts environment-variable names rather than secret values.
   HTTP bearer tokens should use `bearer_token_env_var`; stdio servers should
   inherit named variables through `env_vars`.
 - Profile changes preserve unrelated settings and TOML comments.
 - Adding a server preserves unrelated base settings and comments and uses the
   same atomic-write protections as profile edits.
+- Editing a server changes only its guided transport fields. Base enablement,
+  comments, headers, timeout settings, nested environment tables, and other
+  advanced TOML fields are preserved.
 - Saves use a same-directory temporary file and atomic rename. A save is
-  rejected if another process changed the profile after it was opened.
+  rejected if another process changed the Base config or profile after it was
+  opened.
 - New profile files use user-only permissions on Unix.
 - Deleted profiles are moved to
   `$CODEX_HOME/.codex-mcp-trash/`, not permanently removed.
 - Malformed profiles are shown as invalid and cannot be edited or launched by
   the manager until repaired externally.
 
-Editing, renaming, or removing existing server definitions and performing
-OAuth login/logout remain the responsibility of `codex mcp`. Plugin-bundled
-MCP servers and native Windows are outside the initial release.
+Renaming, removing, or changing the transport of existing server definitions,
+and performing OAuth login/logout, remain the responsibility of `codex mcp`.
+Plugin-bundled MCP servers and native Windows are outside the initial release.
 
 ## Development
 
