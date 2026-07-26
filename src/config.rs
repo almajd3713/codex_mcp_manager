@@ -130,6 +130,8 @@ pub enum StoreError {
     InvalidServerName,
     #[error("MCP server '{0}' already exists in the base config")]
     ServerExists(String),
+    #[error("MCP server '{0}' does not exist in the base config")]
+    ServerMissing(String),
     #[error("invalid MCP server: {0}")]
     InvalidServer(String),
     #[error("could not write {path}: {source}")]
@@ -269,6 +271,39 @@ impl ConfigStore {
         Ok(failed_profiles)
     }
 
+    pub fn inspect_base_source(&self) -> Result<String, StoreError> {
+        read_optional_source(&self.home.join("config.toml"))
+    }
+
+    pub fn inspect_profile_source(&self, name: &str) -> Result<String, StoreError> {
+        validate_profile_name(name)?;
+        let path = self.profile_path(name);
+        fs::read_to_string(&path).map_err(|source| StoreError::Read { path, source })
+    }
+
+    pub fn inspect_server_source(&self, name: &str) -> Result<String, StoreError> {
+        validate_server_name(name)?;
+        let path = self.home.join("config.toml");
+        let loaded = read_optional_document(&path)?;
+        let Some(mcp_servers) = loaded
+            .document
+            .get("mcp_servers")
+            .and_then(Item::as_table_like)
+        else {
+            return Err(StoreError::ServerMissing(name.to_owned()));
+        };
+        let Some(server) = mcp_servers.get(name).cloned() else {
+            return Err(StoreError::ServerMissing(name.to_owned()));
+        };
+
+        let mut document = DocumentMut::new();
+        let mut table = Table::new();
+        table.set_implicit(true);
+        table.insert(name, server);
+        document["mcp_servers"] = Item::Table(table);
+        Ok(document.to_string())
+    }
+
     pub fn create_profile(&self, name: &str) -> Result<(), StoreError> {
         validate_profile_name(name)?;
         let home_already_existed = self.home.exists();
@@ -385,6 +420,17 @@ fn read_optional_document(path: &Path) -> Result<LoadedDocument, StoreError> {
     match fs::read(path) {
         Ok(raw) => parse_document(path, raw),
         Err(error) if error.kind() == io::ErrorKind::NotFound => parse_document(path, Vec::new()),
+        Err(source) => Err(StoreError::Read {
+            path: path.to_owned(),
+            source,
+        }),
+    }
+}
+
+fn read_optional_source(path: &Path) -> Result<String, StoreError> {
+    match fs::read_to_string(path) {
+        Ok(source) => Ok(source),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(String::new()),
         Err(source) => Err(StoreError::Read {
             path: path.to_owned(),
             source,
@@ -1084,5 +1130,36 @@ url = "https://example.test/mcp"
             },
         };
         assert!(validate_new_server(&invalid).is_err());
+    }
+
+    #[test]
+    fn source_inspection_returns_native_profile_and_isolated_server_toml() {
+        let (temp, store) = store_with_base(concat!(
+            "# base comment\n",
+            "[mcp_servers.docs]\n",
+            "url = \"https://docs.example.test\"\n\n",
+            "[mcp_servers.private]\n",
+            "command = \"private-server\"\n",
+            "args = [\"DO_NOT_INCLUDE_ELSEWHERE\"]\n",
+        ));
+        let profile_source = "# intentionally malformed but inspectable\nvalue = \"unfinished\n";
+        fs::write(temp.path().join("broken.config.toml"), profile_source).unwrap();
+
+        assert!(
+            store
+                .inspect_base_source()
+                .unwrap()
+                .contains("# base comment")
+        );
+        assert_eq!(
+            store.inspect_profile_source("broken").unwrap(),
+            profile_source
+        );
+
+        let server = store.inspect_server_source("docs").unwrap();
+        assert!(server.contains("[mcp_servers.docs]"));
+        assert!(server.contains("https://docs.example.test"));
+        assert!(!server.contains("private-server"));
+        assert!(!server.contains("DO_NOT_INCLUDE_ELSEWHERE"));
     }
 }

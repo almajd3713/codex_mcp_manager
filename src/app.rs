@@ -157,13 +157,44 @@ impl AddWizard {
 }
 
 #[derive(Clone)]
+enum InspectTarget {
+    Base,
+    Profile(String),
+    Server(String),
+}
+
+#[derive(Clone)]
+enum InspectBack {
+    Profiles,
+    Inventory { selected: usize },
+}
+
+#[derive(Clone)]
+struct InspectorState {
+    title: String,
+    source: String,
+    vertical_scroll: u16,
+    horizontal_scroll: u16,
+    back: InspectBack,
+}
+
+#[derive(Clone)]
 enum Screen {
     Profiles,
     Editor(EditorState),
-    Inventory { selected: usize },
+    Inventory {
+        selected: usize,
+    },
     AddServer(AddWizard),
     Input(InputState),
-    ConfirmDelete { profile_name: String },
+    ConfirmDelete {
+        profile_name: String,
+    },
+    ConfirmInspect {
+        target: InspectTarget,
+        back: InspectBack,
+    },
+    Inspector(InspectorState),
 }
 
 struct App<'a> {
@@ -215,6 +246,10 @@ impl<'a> App<'a> {
             Screen::AddServer(wizard) => self.handle_add_server_key(key, wizard),
             Screen::Input(input) => self.handle_input_key(key, input),
             Screen::ConfirmDelete { profile_name } => self.handle_delete_key(key, &profile_name),
+            Screen::ConfirmInspect { target, back } => {
+                self.handle_inspect_confirmation(key, target, back)
+            }
+            Screen::Inspector(inspector) => self.handle_inspector_key(key, inspector),
         }
     }
 
@@ -271,9 +306,20 @@ impl<'a> App<'a> {
             KeyCode::Char('m') => {
                 self.screen = Screen::Inventory { selected: 0 };
             }
+            KeyCode::Char('i') => {
+                let target = if self.selected == 0 {
+                    InspectTarget::Base
+                } else {
+                    InspectTarget::Profile(self.catalog.profiles[self.selected - 1].name.clone())
+                };
+                self.screen = Screen::ConfirmInspect {
+                    target,
+                    back: InspectBack::Profiles,
+                };
+            }
             KeyCode::Char('?') => {
                 self.notice = Some(
-                    "Enter launch • n new profile • e edit • m MCP inventory • r rename • d delete"
+                    "Enter launch • n new profile • e edit • i inspect TOML • m MCP inventory"
                         .to_owned(),
                 );
             }
@@ -310,15 +356,114 @@ impl<'a> App<'a> {
                 self.validate_with_codex();
                 self.screen = Screen::Inventory { selected };
             }
+            KeyCode::Char('i') => {
+                if let Some(server) = self.catalog.base_servers.get(selected) {
+                    self.screen = Screen::ConfirmInspect {
+                        target: InspectTarget::Server(server.name.clone()),
+                        back: InspectBack::Inventory { selected },
+                    };
+                } else {
+                    self.screen = Screen::Inventory { selected };
+                }
+            }
             KeyCode::Char('?') => {
                 self.notice = Some(
-                    "n add server • v validate with Codex • Esc return to profiles".to_owned(),
+                    "n add server • i inspect TOML • v validate • Esc return to profiles"
+                        .to_owned(),
                 );
                 self.screen = Screen::Inventory { selected };
             }
             _ => self.screen = Screen::Inventory { selected },
         }
         Ok(None)
+    }
+
+    fn handle_inspect_confirmation(
+        &mut self,
+        key: KeyEvent,
+        target: InspectTarget,
+        back: InspectBack,
+    ) -> Result<Option<Outcome>, StoreError> {
+        match key.code {
+            KeyCode::Char('y') | KeyCode::Char('Y') => {
+                let (title, source) = match &target {
+                    InspectTarget::Base => (
+                        "Base — config.toml".to_owned(),
+                        self.store.inspect_base_source()?,
+                    ),
+                    InspectTarget::Profile(name) => (
+                        format!("Profile '{name}' — {name}.config.toml"),
+                        self.store.inspect_profile_source(name)?,
+                    ),
+                    InspectTarget::Server(name) => (
+                        format!("MCP server '{name}' — native TOML"),
+                        self.store.inspect_server_source(name)?,
+                    ),
+                };
+                self.screen = Screen::Inspector(InspectorState {
+                    title,
+                    source,
+                    vertical_scroll: 0,
+                    horizontal_scroll: 0,
+                    back,
+                });
+            }
+            KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                self.restore_inspect_back(back);
+            }
+            _ => {
+                self.screen = Screen::ConfirmInspect { target, back };
+            }
+        }
+        Ok(None)
+    }
+
+    fn handle_inspector_key(
+        &mut self,
+        key: KeyEvent,
+        mut inspector: InspectorState,
+    ) -> Result<Option<Outcome>, StoreError> {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') => {
+                self.restore_inspect_back(inspector.back);
+                return Ok(None);
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                inspector.vertical_scroll = inspector.vertical_scroll.saturating_sub(1);
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                inspector.vertical_scroll = inspector.vertical_scroll.saturating_add(1);
+            }
+            KeyCode::PageUp => {
+                inspector.vertical_scroll = inspector.vertical_scroll.saturating_sub(10);
+            }
+            KeyCode::PageDown => {
+                inspector.vertical_scroll = inspector.vertical_scroll.saturating_add(10);
+            }
+            KeyCode::Left | KeyCode::Char('h') => {
+                inspector.horizontal_scroll = inspector.horizontal_scroll.saturating_sub(4);
+            }
+            KeyCode::Right | KeyCode::Char('l') => {
+                inspector.horizontal_scroll = inspector.horizontal_scroll.saturating_add(4);
+            }
+            KeyCode::Home | KeyCode::Char('g') => {
+                inspector.vertical_scroll = 0;
+            }
+            KeyCode::End | KeyCode::Char('G') => {
+                inspector.vertical_scroll =
+                    inspector.source.lines().count().saturating_sub(1) as u16;
+            }
+            _ => {}
+        }
+        self.screen = Screen::Inspector(inspector);
+        Ok(None)
+    }
+
+    fn restore_inspect_back(&mut self, back: InspectBack) {
+        self.screen = match back {
+            InspectBack::Profiles => Screen::Profiles,
+            InspectBack::Inventory { selected } => Screen::Inventory { selected },
+        };
     }
 
     fn handle_add_server_key(
@@ -764,15 +909,26 @@ fn render(frame: &mut Frame<'_>, app: &App<'_>) {
             render_inventory(frame, chunks[1], app, *selected);
         }
         Screen::AddServer(wizard) => render_add_server(frame, chunks[1], wizard),
+        Screen::ConfirmInspect { back, .. } => match back {
+            InspectBack::Profiles => render_profiles(frame, chunks[1], app),
+            InspectBack::Inventory { selected } => {
+                render_inventory(frame, chunks[1], app, *selected);
+            }
+        },
+        Screen::Inspector(inspector) => {
+            render_inspector(frame, chunks[1], inspector);
+        }
         _ => render_profiles(frame, chunks[1], app),
     }
 
     let footer = match &app.screen {
         Screen::Profiles => {
-            "↑/↓ navigate  Enter launch  n new profile  e edit  m MCP inventory  ? help"
+            "↑/↓ navigate  Enter launch  n new  e edit  i inspect TOML  m MCP inventory"
         }
         Screen::Editor(_) => "↑/↓ navigate  Space cycle state  s save  Esc cancel",
-        Screen::Inventory { .. } => "↑/↓ navigate  n add server  v validate  Esc profiles",
+        Screen::Inventory { .. } => {
+            "↑/↓ navigate  n add server  i inspect TOML  v validate  Esc profiles"
+        }
         Screen::AddServer(wizard) if wizard.step == AddStep::AssignProfiles => {
             "↑/↓ navigate  Space toggle profile  s/Enter save  Esc cancel"
         }
@@ -782,6 +938,8 @@ fn render(frame: &mut Frame<'_>, app: &App<'_>) {
         Screen::AddServer(_) => "Enter continue  Ctrl-U clear  Esc cancel",
         Screen::Input(_) => "Enter confirm  Ctrl-U clear  Esc cancel",
         Screen::ConfirmDelete { .. } => "y move to trash  n/Esc cancel",
+        Screen::ConfirmInspect { .. } => "y show raw TOML  n/Esc cancel",
+        Screen::Inspector(_) => "↑/↓ PgUp/PgDn scroll  ←/→ horizontal  Home/End  q/Esc back",
     };
     frame.render_widget(
         Paragraph::new(footer)
@@ -793,11 +951,28 @@ fn render(frame: &mut Frame<'_>, app: &App<'_>) {
     match &app.screen {
         Screen::Input(input) => render_input(frame, area, input),
         Screen::ConfirmDelete { profile_name } => render_confirmation(frame, area, profile_name),
+        Screen::ConfirmInspect { .. } => render_inspect_confirmation(frame, area),
         _ => {}
     }
     if let Some(notice) = &app.notice {
         render_notice(frame, area, notice);
     }
+}
+
+fn render_inspector(frame: &mut Frame<'_>, area: Rect, inspector: &InspectorState) {
+    let source = if inspector.source.is_empty() {
+        "(empty TOML file)"
+    } else {
+        inspector.source.as_str()
+    };
+    let paragraph = Paragraph::new(source)
+        .block(
+            Block::default()
+                .title(format!(" {} — raw, read-only ", inspector.title))
+                .borders(Borders::ALL),
+        )
+        .scroll((inspector.vertical_scroll, inspector.horizontal_scroll));
+    frame.render_widget(paragraph, area);
 }
 
 fn render_inventory(frame: &mut Frame<'_>, area: Rect, app: &App<'_>, selected: usize) {
@@ -1205,6 +1380,24 @@ fn render_confirmation(frame: &mut Frame<'_>, area: Rect, profile_name: &str) {
     );
 }
 
+fn render_inspect_confirmation(frame: &mut Frame<'_>, area: Rect) {
+    let popup = centered_rect(area, 76, 8);
+    frame.render_widget(Clear, popup);
+    frame.render_widget(
+        Paragraph::new(
+            "Raw source may contain commands, URLs, headers, or credentials. Show it? (y/N)",
+        )
+        .block(
+            Block::default()
+                .title(" Sensitive configuration ")
+                .borders(Borders::ALL),
+        )
+        .wrap(Wrap { trim: true })
+        .alignment(Alignment::Center),
+        popup,
+    );
+}
+
 fn render_notice(frame: &mut Frame<'_>, area: Rect, notice: &str) {
     let popup = centered_rect(area, 76, 7);
     frame.render_widget(Clear, popup);
@@ -1442,5 +1635,29 @@ mod tests {
         assert!(profile.contains("[mcp_servers.docs]"));
         assert!(profile.contains("enabled = true"));
         assert!(matches!(app.screen, Screen::Inventory { .. }));
+    }
+
+    #[test]
+    fn inspection_requires_confirmation_and_returns_to_origin() {
+        let temp = tempdir().unwrap();
+        fs::write(
+            temp.path().join("config.toml"),
+            "sensitive_value = \"VISIBLE_AFTER_CONFIRMATION\"\n",
+        )
+        .unwrap();
+        let store = ConfigStore::new(temp.path().to_owned());
+        let mut app = App::new(&store, OsStr::new("codex"), None).unwrap();
+
+        app.handle_key(key(KeyCode::Char('i'))).unwrap();
+        assert!(matches!(app.screen, Screen::ConfirmInspect { .. }));
+
+        app.handle_key(key(KeyCode::Char('y'))).unwrap();
+        let Screen::Inspector(inspector) = &app.screen else {
+            panic!("expected inspector");
+        };
+        assert!(inspector.source.contains("VISIBLE_AFTER_CONFIRMATION"));
+
+        app.handle_key(key(KeyCode::Esc)).unwrap();
+        assert!(matches!(app.screen, Screen::Profiles));
     }
 }

@@ -54,6 +54,7 @@ Profile picker:
 - `r`: rename a profile
 - `d`: move a profile to the recovery directory
 - `m`: open the MCP server inventory
+- `i`: inspect the selected Base or profile file as native TOML
 - `j`/`k` or arrow keys: navigate
 - `q` or `Esc`: quit
 
@@ -66,8 +67,16 @@ Profile editor:
 MCP inventory:
 
 - `n`: add a local stdio or remote HTTP server
+- `i`: inspect only the selected server's native TOML table
 - `v`: ask Codex to validate the current configuration
 - `Esc`: return to profiles
+
+Source inspector:
+
+- `j`/`k`, arrow keys, `PageUp`, or `PageDown`: scroll vertically
+- Left/right arrows or `h`/`l`: scroll long lines horizontally
+- `Home`/`End`: jump to the beginning or end
+- `q` or `Esc`: return to the originating screen
 
 The add-server wizard collects:
 
