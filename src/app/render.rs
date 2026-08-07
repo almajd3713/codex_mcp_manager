@@ -7,6 +7,7 @@ use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragra
 use crate::config::{OverrideState, ServerField, ServerOrigin, TransportKind};
 
 use super::server_form::{form_field_values, tool_values};
+use super::text_edit;
 use super::{
     AddStep, AddWizard, App, EditorState, FieldInputState, InputState, InspectBack, InspectorState,
     Screen, ServerForm, ToolListState, ToolNameInputState, WizardTransport,
@@ -82,16 +83,24 @@ pub(super) fn render(frame: &mut Frame<'_>, app: &App<'_>) {
         Screen::AddServer(wizard) if wizard.step == AddStep::Transport => {
             "↑/↓ or s/h choose transport  Enter continue  Esc cancel"
         }
-        Screen::AddServer(_) => "Enter continue  Ctrl-U clear  Esc cancel",
+        Screen::AddServer(_) => {
+            "←/→ move  Home/End  Backspace/Delete edit  Enter continue  Ctrl-U clear  Esc cancel"
+        }
         Screen::ServerForm(_) => {
             "↑/↓ fields  Enter edit  Space cycle  Delete unset  s save  Esc cancel"
         }
-        Screen::FieldInput(_) => "Enter apply  Ctrl-U clear  Esc keep previous value",
+        Screen::FieldInput(_) => {
+            "←/→ move  Home/End  Backspace/Delete edit  Enter apply  Ctrl-U clear  Esc cancel"
+        }
         Screen::ToolList(_) => {
             "↑/↓ tools  a add  Enter/e edit  d delete  Space unset/empty  Esc fields"
         }
-        Screen::ToolNameInput(_) => "Enter apply tool name  Ctrl-U clear  Esc cancel",
-        Screen::Input(_) => "Enter confirm  Ctrl-U clear  Esc cancel",
+        Screen::ToolNameInput(_) => {
+            "←/→ move  Home/End  Backspace/Delete edit  Enter apply  Ctrl-U clear  Esc cancel"
+        }
+        Screen::Input(_) => {
+            "←/→ move  Home/End  Backspace/Delete edit  Enter confirm  Ctrl-U clear  Esc cancel"
+        }
         Screen::ConfirmDelete { .. } => "y move to trash  n/Esc cancel",
         Screen::ConfirmInspect { .. } => "y show raw TOML  n/Esc cancel",
         Screen::ConfirmEdit { .. } => "y load values into editor  n/Esc cancel",
@@ -347,8 +356,10 @@ fn render_wizard_input(frame: &mut Frame<'_>, area: Rect, wizard: &AddWizard) {
         .alignment(Alignment::Center),
         chunks[0],
     );
+    let input_width = chunks[1].width.saturating_sub(2);
+    let (visible, cursor_column) = text_edit::viewport(&wizard.input, wizard.cursor, input_width);
     frame.render_widget(
-        Paragraph::new(wizard.input.as_str())
+        Paragraph::new(visible)
             .block(Block::default().title(title).borders(Borders::ALL))
             .wrap(Wrap { trim: false }),
         chunks[1],
@@ -362,7 +373,7 @@ fn render_wizard_input(frame: &mut Frame<'_>, area: Rect, wizard: &AddWizard) {
     let cursor_x = chunks[1]
         .x
         .saturating_add(1)
-        .saturating_add(wizard.input.len() as u16)
+        .saturating_add(cursor_column)
         .min(chunks[1].right().saturating_sub(2));
     frame.set_cursor_position((cursor_x, chunks[1].y.saturating_add(1)));
 }
@@ -499,6 +510,7 @@ fn render_field_input(frame: &mut Frame<'_>, area: Rect, input: &FieldInputState
         area,
         &format!(" {} ", field_label(input.field)),
         &input.value,
+        input.cursor,
     );
 }
 
@@ -508,14 +520,22 @@ fn render_tool_name_input(frame: &mut Frame<'_>, area: Rect, input: &ToolNameInp
     } else {
         "Add"
     };
-    render_text_popup(frame, area, &format!(" {action} tool name "), &input.value);
+    render_text_popup(
+        frame,
+        area,
+        &format!(" {action} tool name "),
+        &input.value,
+        input.cursor,
+    );
 }
 
-fn render_text_popup(frame: &mut Frame<'_>, area: Rect, title: &str, value: &str) {
+fn render_text_popup(frame: &mut Frame<'_>, area: Rect, title: &str, value: &str, cursor: usize) {
     let popup = centered_rect(area, 68, 5);
+    let input_width = popup.width.saturating_sub(2);
+    let (visible, cursor_column) = text_edit::viewport(value, cursor, input_width);
     frame.render_widget(Clear, popup);
     frame.render_widget(
-        Paragraph::new(value)
+        Paragraph::new(visible)
             .block(Block::default().title(title).borders(Borders::ALL))
             .wrap(Wrap { trim: false }),
         popup,
@@ -523,7 +543,7 @@ fn render_text_popup(frame: &mut Frame<'_>, area: Rect, title: &str, value: &str
     let cursor_x = popup
         .x
         .saturating_add(1)
-        .saturating_add(value.len() as u16)
+        .saturating_add(cursor_column)
         .min(popup.right().saturating_sub(2));
     frame.set_cursor_position((cursor_x, popup.y.saturating_add(1)));
 }
@@ -687,20 +707,7 @@ fn render_editor(frame: &mut Frame<'_>, area: Rect, editor: &EditorState) {
 }
 
 fn render_input(frame: &mut Frame<'_>, area: Rect, input: &InputState) {
-    let popup = centered_rect(area, 60, 5);
-    frame.render_widget(Clear, popup);
-    frame.render_widget(
-        Paragraph::new(input.value.as_str())
-            .block(Block::default().title(input.title).borders(Borders::ALL))
-            .wrap(Wrap { trim: false }),
-        popup,
-    );
-    let cursor_x = popup
-        .x
-        .saturating_add(1)
-        .saturating_add(input.value.len() as u16)
-        .min(popup.right().saturating_sub(2));
-    frame.set_cursor_position((cursor_x, popup.y.saturating_add(1)));
+    render_text_popup(frame, area, input.title, &input.value, input.cursor);
 }
 
 fn render_confirmation(frame: &mut Frame<'_>, area: Rect, profile_name: &str) {

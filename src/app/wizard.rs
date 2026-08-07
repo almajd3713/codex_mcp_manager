@@ -25,6 +25,7 @@ pub(super) struct ProfileChoice {
 pub(super) struct AddWizard {
     pub(super) step: AddStep,
     pub(super) input: String,
+    pub(super) cursor: usize,
     pub(super) name: String,
     pub(super) transport: WizardTransport,
     pub(super) server: Option<NewServer>,
@@ -38,6 +39,7 @@ impl AddWizard {
         Self {
             step: AddStep::Name,
             input: String::new(),
+            cursor: 0,
             name: String::new(),
             transport: WizardTransport::Stdio,
             server: None,

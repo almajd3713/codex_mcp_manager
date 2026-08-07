@@ -100,6 +100,11 @@ Server form keys:
 - `s`: validate and save the form
 - `Esc`: discard the in-memory changes
 
+While editing text, left/right arrows move the cursor, `Home`/`End` jump to
+either edge, `Backspace` removes the character before the cursor, and `Delete`
+removes the character under it. Long values scroll horizontally to keep the
+cursor visible. `Ctrl-U` clears the complete field.
+
 Inside an enabled/disabled tool list, `a` adds a tool, `Enter` or `e` edits
 one, and `d` or `Delete` removes one. `Space` toggles between an unset list and
 an explicit empty list; those have different meanings and are preserved

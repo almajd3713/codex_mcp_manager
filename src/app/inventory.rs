@@ -1,3 +1,4 @@
+use super::text_edit;
 use super::*;
 
 impl<'a> App<'a> {
@@ -246,17 +247,24 @@ impl<'a> App<'a> {
             KeyCode::Enter => {
                 validate_server_name(wizard.input.trim())?;
                 wizard.name = wizard.input.trim().to_owned();
-                wizard.input.clear();
+                text_edit::clear(&mut wizard.input, &mut wizard.cursor);
                 wizard.step = AddStep::Transport;
             }
             KeyCode::Backspace => {
-                wizard.input.pop();
+                text_edit::backspace(&mut wizard.input, &mut wizard.cursor);
             }
+            KeyCode::Delete => {
+                text_edit::delete(&mut wizard.input, wizard.cursor);
+            }
+            KeyCode::Left => text_edit::move_left(&mut wizard.cursor),
+            KeyCode::Right => text_edit::move_right(&wizard.input, &mut wizard.cursor),
+            KeyCode::Home => wizard.cursor = 0,
+            KeyCode::End => wizard.cursor = text_edit::end(&wizard.input),
             KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                wizard.input.clear();
+                text_edit::clear(&mut wizard.input, &mut wizard.cursor);
             }
             KeyCode::Char(character) if !character.is_control() => {
-                wizard.input.push(character);
+                text_edit::insert(&mut wizard.input, &mut wizard.cursor, character);
             }
             _ => {}
         }

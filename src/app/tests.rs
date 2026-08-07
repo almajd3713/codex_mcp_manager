@@ -301,3 +301,38 @@ fn server_form_edits_runtime_and_tool_policy_options() {
     assert!(rendered.contains("default_tools_approval_mode = \"auto\""));
     assert!(rendered.contains("enabled_tools = [\"search\"]"));
 }
+
+#[test]
+fn argument_field_supports_editing_at_the_cursor() {
+    let temp = tempdir().unwrap();
+    fs::write(
+        temp.path().join("config.toml"),
+        concat!(
+            "[mcp_servers.local]\n",
+            "command = \"server\"\n",
+            "args = [\"--first\", \"--wrnog\", \"--last\"]\n",
+        ),
+    )
+    .unwrap();
+    let store = ConfigStore::new(temp.path().to_owned());
+    let mut app = App::new(&store, OsStr::new("codex"), None).unwrap();
+
+    app.handle_key(key(KeyCode::Char('m'))).unwrap();
+    app.handle_key(key(KeyCode::Char('e'))).unwrap();
+    app.handle_key(key(KeyCode::Char('y'))).unwrap();
+    app.handle_key(key(KeyCode::Down)).unwrap();
+    app.handle_key(key(KeyCode::Enter)).unwrap();
+    app.handle_key(key(KeyCode::Home)).unwrap();
+    for _ in 0..15 {
+        app.handle_key(key(KeyCode::Right)).unwrap();
+    }
+    app.handle_key(key(KeyCode::Delete)).unwrap();
+    app.handle_key(key(KeyCode::Delete)).unwrap();
+    app.handle_key(key(KeyCode::Char('o'))).unwrap();
+    app.handle_key(key(KeyCode::Char('n'))).unwrap();
+    app.handle_key(key(KeyCode::Enter)).unwrap();
+    app.handle_key(key(KeyCode::Char('s'))).unwrap();
+
+    let rendered = fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    assert!(rendered.contains("args = [\"--first\", \"--wrong\", \"--last\"]"));
+}

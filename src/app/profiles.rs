@@ -1,3 +1,4 @@
+use super::text_edit;
 use super::*;
 
 impl<'a> App<'a> {
@@ -32,6 +33,7 @@ impl<'a> App<'a> {
                 self.screen = Screen::Input(InputState {
                     title: " New profile ",
                     value: String::new(),
+                    cursor: 0,
                     action: InputAction::Create,
                 });
             }
@@ -41,6 +43,7 @@ impl<'a> App<'a> {
                     self.screen = Screen::Input(InputState {
                         title: " Rename profile ",
                         value: profile.name.clone(),
+                        cursor: text_edit::end(&profile.name),
                         action: InputAction::Rename {
                             old_name: profile.name.clone(),
                         },
@@ -179,17 +182,37 @@ impl<'a> App<'a> {
                 }
             }
             KeyCode::Backspace => {
-                input.value.pop();
+                text_edit::backspace(&mut input.value, &mut input.cursor);
+                self.screen = Screen::Input(input);
+            }
+            KeyCode::Delete => {
+                text_edit::delete(&mut input.value, input.cursor);
+                self.screen = Screen::Input(input);
+            }
+            KeyCode::Left => {
+                text_edit::move_left(&mut input.cursor);
+                self.screen = Screen::Input(input);
+            }
+            KeyCode::Right => {
+                text_edit::move_right(&input.value, &mut input.cursor);
+                self.screen = Screen::Input(input);
+            }
+            KeyCode::Home => {
+                input.cursor = 0;
+                self.screen = Screen::Input(input);
+            }
+            KeyCode::End => {
+                input.cursor = text_edit::end(&input.value);
                 self.screen = Screen::Input(input);
             }
             KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                input.value.clear();
+                text_edit::clear(&mut input.value, &mut input.cursor);
                 self.screen = Screen::Input(input);
             }
             KeyCode::Char(character)
                 if character.is_ascii_alphanumeric() || character == '-' || character == '_' =>
             {
-                input.value.push(character);
+                text_edit::insert(&mut input.value, &mut input.cursor, character);
                 self.screen = Screen::Input(input);
             }
             _ => self.screen = Screen::Input(input),

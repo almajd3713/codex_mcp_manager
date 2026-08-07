@@ -19,6 +19,7 @@ mod render;
 mod server_editor;
 mod server_form;
 mod terminal;
+mod text_edit;
 mod wizard;
 
 #[cfg(test)]
@@ -63,6 +64,7 @@ enum InputAction {
 struct InputState {
     title: &'static str,
     value: String,
+    cursor: usize,
     action: InputAction,
 }
 

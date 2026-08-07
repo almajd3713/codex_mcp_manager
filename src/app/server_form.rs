@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use super::text_edit;
 use super::wizard::{format_shell_words, nonempty, parse_env_vars, parse_shell_words};
 use super::*;
 use crate::config::{
@@ -28,6 +29,7 @@ pub(super) struct FieldInputState {
     pub(super) form: ServerForm,
     pub(super) field: ServerField,
     pub(super) value: String,
+    pub(super) cursor: usize,
 }
 
 #[derive(Clone)]
@@ -42,6 +44,7 @@ pub(super) struct ToolNameInputState {
     pub(super) list: ToolListState,
     pub(super) edit_index: Option<usize>,
     pub(super) value: String,
+    pub(super) cursor: usize,
 }
 
 impl ServerForm {
@@ -175,7 +178,13 @@ impl<'a> App<'a> {
                     self.cycle_form_field(&mut form)?;
                 } else {
                     let value = field_input_value(&form, field);
-                    self.screen = Screen::FieldInput(FieldInputState { form, field, value });
+                    let cursor = text_edit::end(&value);
+                    self.screen = Screen::FieldInput(FieldInputState {
+                        form,
+                        field,
+                        value,
+                        cursor,
+                    });
                     return Ok(None);
                 }
             }
@@ -304,15 +313,35 @@ impl<'a> App<'a> {
                 self.screen = Screen::ServerForm(input.form);
             }
             KeyCode::Backspace => {
-                input.value.pop();
+                text_edit::backspace(&mut input.value, &mut input.cursor);
+                self.screen = Screen::FieldInput(input);
+            }
+            KeyCode::Delete => {
+                text_edit::delete(&mut input.value, input.cursor);
+                self.screen = Screen::FieldInput(input);
+            }
+            KeyCode::Left => {
+                text_edit::move_left(&mut input.cursor);
+                self.screen = Screen::FieldInput(input);
+            }
+            KeyCode::Right => {
+                text_edit::move_right(&input.value, &mut input.cursor);
+                self.screen = Screen::FieldInput(input);
+            }
+            KeyCode::Home => {
+                input.cursor = 0;
+                self.screen = Screen::FieldInput(input);
+            }
+            KeyCode::End => {
+                input.cursor = text_edit::end(&input.value);
                 self.screen = Screen::FieldInput(input);
             }
             KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                input.value.clear();
+                text_edit::clear(&mut input.value, &mut input.cursor);
                 self.screen = Screen::FieldInput(input);
             }
             KeyCode::Char(character) if !character.is_control() => {
-                input.value.push(character);
+                text_edit::insert(&mut input.value, &mut input.cursor, character);
                 self.screen = Screen::FieldInput(input);
             }
             _ => self.screen = Screen::FieldInput(input),
@@ -353,15 +382,18 @@ impl<'a> App<'a> {
                     list,
                     edit_index: None,
                     value: String::new(),
+                    cursor: 0,
                 });
             }
             KeyCode::Enter | KeyCode::Char('e') if !values.is_empty() => {
                 let value = values[list.selected].clone();
+                let cursor = text_edit::end(&value);
                 let edit_index = Some(list.selected);
                 self.screen = Screen::ToolNameInput(ToolNameInputState {
                     list,
                     edit_index,
                     value,
+                    cursor,
                 });
             }
             KeyCode::Delete | KeyCode::Char('d') if !values.is_empty() => {
@@ -415,15 +447,35 @@ impl<'a> App<'a> {
                 self.screen = Screen::ToolList(input.list);
             }
             KeyCode::Backspace => {
-                input.value.pop();
+                text_edit::backspace(&mut input.value, &mut input.cursor);
+                self.screen = Screen::ToolNameInput(input);
+            }
+            KeyCode::Delete => {
+                text_edit::delete(&mut input.value, input.cursor);
+                self.screen = Screen::ToolNameInput(input);
+            }
+            KeyCode::Left => {
+                text_edit::move_left(&mut input.cursor);
+                self.screen = Screen::ToolNameInput(input);
+            }
+            KeyCode::Right => {
+                text_edit::move_right(&input.value, &mut input.cursor);
+                self.screen = Screen::ToolNameInput(input);
+            }
+            KeyCode::Home => {
+                input.cursor = 0;
+                self.screen = Screen::ToolNameInput(input);
+            }
+            KeyCode::End => {
+                input.cursor = text_edit::end(&input.value);
                 self.screen = Screen::ToolNameInput(input);
             }
             KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                input.value.clear();
+                text_edit::clear(&mut input.value, &mut input.cursor);
                 self.screen = Screen::ToolNameInput(input);
             }
             KeyCode::Char(character) if !character.is_control() => {
-                input.value.push(character);
+                text_edit::insert(&mut input.value, &mut input.cursor, character);
                 self.screen = Screen::ToolNameInput(input);
             }
             _ => self.screen = Screen::ToolNameInput(input),
