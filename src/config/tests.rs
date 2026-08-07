@@ -1,11 +1,12 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 
 use tempfile::tempdir;
 
 use super::{
-    ConfigStore, NewServer, OverrideState, ServerDefinition, ServerOrigin, StoreError,
-    TransportKind, validate_new_server,
+    ConfigStore, McpServerOptions, NewServer, OverrideState, ServerDefinition, ServerField,
+    ServerOrigin, ServerUpdate, StartupTimeoutSource, StoreError, ToolApprovalMode, TransportKind,
+    validate_new_server,
 };
 
 fn store_with_base(base: &str) -> (tempfile::TempDir, ConfigStore) {
@@ -167,6 +168,7 @@ fn adds_stdio_server_disabled_and_assigns_selected_profiles() {
             cwd: Some("/tmp/work".to_owned()),
             env_vars: vec!["EXAMPLE_TOKEN".to_owned()],
         },
+        options: McpServerOptions::default(),
     };
 
     let failed = store
@@ -213,6 +215,7 @@ fn adds_http_server_with_environment_backed_bearer_token() {
             url: "https://mcp.example.test/api".to_owned(),
             bearer_token_env_var: Some("REMOTE_MCP_TOKEN".to_owned()),
         },
+        options: McpServerOptions::default(),
     };
 
     store
@@ -239,6 +242,7 @@ fn rejects_duplicate_and_invalid_server_definitions() {
             url: "https://other.test".to_owned(),
             bearer_token_env_var: None,
         },
+        options: McpServerOptions::default(),
     };
     assert!(matches!(
         store.add_server_and_assign(&duplicate, catalog.base_fingerprint, &[]),
@@ -253,6 +257,7 @@ fn rejects_duplicate_and_invalid_server_definitions() {
             cwd: None,
             env_vars: vec!["NOT-VALID".to_owned()],
         },
+        options: McpServerOptions::default(),
     };
     assert!(validate_new_server(&invalid).is_err());
 }
@@ -304,16 +309,25 @@ fn updates_stdio_server_without_losing_advanced_fields_or_enablement() {
         "LOG_LEVEL = \"debug\"\n",
     ));
     let catalog = store.load_catalog().unwrap();
-    let loaded = store.load_server_definition("local").unwrap();
-    assert!(matches!(loaded.definition, ServerDefinition::Stdio { .. }));
-    let updated = NewServer {
-        name: "local".to_owned(),
-        definition: ServerDefinition::Stdio {
-            command: "new-command".to_owned(),
-            args: Vec::new(),
-            cwd: None,
-            env_vars: vec!["NEW_TOKEN".to_owned()],
-        },
+    let mut loaded = store.load_server_definition("local").unwrap();
+    assert!(matches!(
+        loaded.server.definition,
+        ServerDefinition::Stdio { .. }
+    ));
+    loaded.server.definition = ServerDefinition::Stdio {
+        command: "new-command".to_owned(),
+        args: Vec::new(),
+        cwd: None,
+        env_vars: vec!["NEW_TOKEN".to_owned()],
+    };
+    let updated = ServerUpdate {
+        editable: loaded,
+        dirty_fields: BTreeSet::from([
+            ServerField::Command,
+            ServerField::Arguments,
+            ServerField::WorkingDirectory,
+            ServerField::EnvironmentVariables,
+        ]),
     };
 
     store
@@ -344,12 +358,14 @@ fn updates_http_server_without_losing_headers() {
         "X-Client = \"codex-mcp\"\n",
     ));
     let catalog = store.load_catalog().unwrap();
-    let updated = NewServer {
-        name: "remote".to_owned(),
-        definition: ServerDefinition::Http {
-            url: "https://new.example.test/mcp".to_owned(),
-            bearer_token_env_var: None,
-        },
+    let mut loaded = store.load_server_definition("remote").unwrap();
+    loaded.server.definition = ServerDefinition::Http {
+        url: "https://new.example.test/mcp".to_owned(),
+        bearer_token_env_var: None,
+    };
+    let updated = ServerUpdate {
+        editable: loaded,
+        dirty_fields: BTreeSet::from([ServerField::Url, ServerField::BearerEnvironmentVariable]),
     };
 
     store
@@ -373,12 +389,14 @@ fn server_update_refuses_stale_base_fingerprint() {
         "[mcp_servers.docs]\nurl = \"https://external.example.test\"\n",
     )
     .unwrap();
-    let updated = NewServer {
-        name: "docs".to_owned(),
-        definition: ServerDefinition::Http {
-            url: "https://new.example.test".to_owned(),
-            bearer_token_env_var: None,
-        },
+    let mut loaded = store.load_server_definition("docs").unwrap();
+    loaded.server.definition = ServerDefinition::Http {
+        url: "https://new.example.test".to_owned(),
+        bearer_token_env_var: None,
+    };
+    let updated = ServerUpdate {
+        editable: loaded,
+        dirty_fields: BTreeSet::from([ServerField::Url]),
     };
 
     assert!(matches!(
@@ -393,16 +411,168 @@ fn server_update_refuses_stale_base_fingerprint() {
 }
 
 #[test]
-fn guided_editor_rejects_non_string_arrays_without_echoing_values() {
+fn guided_editor_locks_structured_env_vars_without_echoing_values() {
     let (_temp, store) = store_with_base(concat!(
         "[mcp_servers.local]\n",
         "command = \"server\"\n",
         "env_vars = [{ name = \"DO_NOT_ECHO\" }]\n",
     ));
 
-    let error = store.load_server_definition("local").unwrap_err();
-    let message = error.to_string();
-    assert!(message.contains("env_vars"));
-    assert!(message.contains("only strings"));
-    assert!(!message.contains("DO_NOT_ECHO"));
+    let editable = store.load_server_definition("local").unwrap();
+    assert!(
+        editable
+            .locked_fields
+            .contains(&ServerField::EnvironmentVariables)
+    );
+    assert!(matches!(
+        editable.server.definition,
+        ServerDefinition::Stdio { ref env_vars, .. } if env_vars.is_empty()
+    ));
+}
+
+#[test]
+fn adds_all_supported_core_server_options() {
+    let (temp, store) = store_with_base("");
+    let catalog = store.load_catalog().unwrap();
+    let server = NewServer {
+        name: "complete".to_owned(),
+        definition: ServerDefinition::Http {
+            url: "https://example.test/mcp".to_owned(),
+            bearer_token_env_var: None,
+        },
+        options: McpServerOptions {
+            required: Some(true),
+            startup_timeout_sec: Some(12.5),
+            tool_timeout_sec: Some(90.0),
+            enabled_tools: Some(Vec::new()),
+            disabled_tools: Some(vec!["dangerous".to_owned()]),
+            default_tools_approval_mode: Some(ToolApprovalMode::Writes),
+        },
+    };
+
+    store
+        .add_server_and_assign(&server, catalog.base_fingerprint, &[])
+        .unwrap();
+
+    let rendered = fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    assert!(rendered.contains("required = true"));
+    assert!(rendered.contains("startup_timeout_sec = 12.5"));
+    assert!(rendered.contains("tool_timeout_sec = 90.0"));
+    assert!(rendered.contains("enabled_tools = []"));
+    assert!(rendered.contains("disabled_tools = [\"dangerous\"]"));
+    assert!(rendered.contains("default_tools_approval_mode = \"writes\""));
+}
+
+#[test]
+fn preserves_legacy_startup_milliseconds_until_timeout_is_edited() {
+    let (temp, store) = store_with_base(concat!(
+        "[mcp_servers.local]\n",
+        "command = \"server\"\n",
+        "startup_timeout_ms = 1500\n",
+    ));
+    let catalog = store.load_catalog().unwrap();
+    let mut editable = store.load_server_definition("local").unwrap();
+    assert_eq!(
+        editable.startup_timeout_source,
+        StartupTimeoutSource::Milliseconds
+    );
+    assert_eq!(editable.server.options.startup_timeout_sec, Some(1.5));
+
+    editable.server.options.required = Some(true);
+    store
+        .update_server(
+            &ServerUpdate {
+                editable,
+                dirty_fields: BTreeSet::from([ServerField::Required]),
+            },
+            catalog.base_fingerprint,
+        )
+        .unwrap();
+    let rendered = fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    assert!(rendered.contains("startup_timeout_ms = 1500"));
+    assert!(!rendered.contains("startup_timeout_sec"));
+
+    let catalog = store.load_catalog().unwrap();
+    let mut editable = store.load_server_definition("local").unwrap();
+    editable.server.options.startup_timeout_sec = Some(2.25);
+    store
+        .update_server(
+            &ServerUpdate {
+                editable,
+                dirty_fields: BTreeSet::from([ServerField::StartupTimeout]),
+            },
+            catalog.base_fingerprint,
+        )
+        .unwrap();
+    let rendered = fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    assert!(!rendered.contains("startup_timeout_ms"));
+    assert!(rendered.contains("startup_timeout_sec = 2.25"));
+}
+
+#[test]
+fn tool_lists_distinguish_unset_from_explicit_empty() {
+    let (temp, store) = store_with_base("[mcp_servers.local]\ncommand = \"server\"\n");
+    let catalog = store.load_catalog().unwrap();
+    let mut editable = store.load_server_definition("local").unwrap();
+    assert_eq!(editable.server.options.enabled_tools, None);
+    editable.server.options.enabled_tools = Some(Vec::new());
+    store
+        .update_server(
+            &ServerUpdate {
+                editable,
+                dirty_fields: BTreeSet::from([ServerField::EnabledTools]),
+            },
+            catalog.base_fingerprint,
+        )
+        .unwrap();
+    assert!(
+        fs::read_to_string(temp.path().join("config.toml"))
+            .unwrap()
+            .contains("enabled_tools = []")
+    );
+    let loaded = store.load_server_definition("local").unwrap();
+    assert_eq!(loaded.server.options.enabled_tools, Some(Vec::new()));
+
+    let catalog = store.load_catalog().unwrap();
+    let mut editable = loaded;
+    editable.server.options.enabled_tools = None;
+    store
+        .update_server(
+            &ServerUpdate {
+                editable,
+                dirty_fields: BTreeSet::from([ServerField::EnabledTools]),
+            },
+            catalog.base_fingerprint,
+        )
+        .unwrap();
+    assert!(
+        !fs::read_to_string(temp.path().join("config.toml"))
+            .unwrap()
+            .contains("enabled_tools")
+    );
+}
+
+#[test]
+fn editing_core_option_preserves_structured_env_vars() {
+    let (temp, store) = store_with_base(concat!(
+        "[mcp_servers.local]\n",
+        "command = \"server\"\n",
+        "env_vars = [{ name = \"TOKEN\", value = \"SECRET\" }]\n",
+    ));
+    let catalog = store.load_catalog().unwrap();
+    let mut editable = store.load_server_definition("local").unwrap();
+    editable.server.options.tool_timeout_sec = Some(60.0);
+    store
+        .update_server(
+            &ServerUpdate {
+                editable,
+                dirty_fields: BTreeSet::from([ServerField::ToolTimeout]),
+            },
+            catalog.base_fingerprint,
+        )
+        .unwrap();
+
+    let rendered = fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    assert!(rendered.contains("env_vars = [{ name = \"TOKEN\", value = \"SECRET\" }]"));
+    assert!(rendered.contains("tool_timeout_sec = 60.0"));
 }

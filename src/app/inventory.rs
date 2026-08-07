@@ -174,11 +174,8 @@ impl<'a> App<'a> {
                 KeyCode::Char('s') => wizard.transport = WizardTransport::Stdio,
                 KeyCode::Char('h') => wizard.transport = WizardTransport::Http,
                 KeyCode::Enter => {
-                    wizard.step = match wizard.transport {
-                        WizardTransport::Stdio => AddStep::Command,
-                        WizardTransport::Http => AddStep::Url,
-                    };
-                    wizard.input.clear();
+                    self.screen = Screen::ServerForm(ServerForm::for_add(wizard));
+                    return Ok(None);
                 }
                 _ => {}
             }
@@ -203,7 +200,7 @@ impl<'a> App<'a> {
                     }
                 }
                 KeyCode::Char('s') | KeyCode::Enter => {
-                    let server = wizard.definition();
+                    let server = wizard.definition()?.clone();
                     validate_new_server(&server)?;
                     let assignments = wizard
                         .choices
@@ -246,7 +243,12 @@ impl<'a> App<'a> {
         }
 
         match key.code {
-            KeyCode::Enter => self.advance_add_wizard(&mut wizard)?,
+            KeyCode::Enter => {
+                validate_server_name(wizard.input.trim())?;
+                wizard.name = wizard.input.trim().to_owned();
+                wizard.input.clear();
+                wizard.step = AddStep::Transport;
+            }
             KeyCode::Backspace => {
                 wizard.input.pop();
             }
@@ -260,60 +262,6 @@ impl<'a> App<'a> {
         }
         self.screen = Screen::AddServer(wizard);
         Ok(None)
-    }
-
-    fn advance_add_wizard(&self, wizard: &mut AddWizard) -> Result<(), StoreError> {
-        match wizard.step {
-            AddStep::Name => {
-                validate_server_name(wizard.input.trim())?;
-                wizard.name = wizard.input.trim().to_owned();
-                wizard.input.clear();
-                wizard.step = AddStep::Transport;
-            }
-            AddStep::Command => {
-                if wizard.input.trim().is_empty() {
-                    return Err(StoreError::InvalidServer(
-                        "stdio command cannot be empty".to_owned(),
-                    ));
-                }
-                wizard.command = wizard.input.trim().to_owned();
-                wizard.input.clear();
-                wizard.step = AddStep::Arguments;
-            }
-            AddStep::Arguments => {
-                wizard.args = parse_shell_words(&wizard.input)?;
-                wizard.input.clear();
-                wizard.step = AddStep::WorkingDirectory;
-            }
-            AddStep::WorkingDirectory => {
-                wizard.cwd = nonempty(wizard.input.trim());
-                wizard.input.clear();
-                wizard.step = AddStep::EnvironmentVariables;
-            }
-            AddStep::EnvironmentVariables => {
-                wizard.env_vars = parse_env_vars(&wizard.input);
-                let server = wizard.definition();
-                validate_new_server(&server)?;
-                wizard.input.clear();
-                wizard.step = AddStep::AssignProfiles;
-            }
-            AddStep::Url => {
-                wizard.url = wizard.input.trim().to_owned();
-                let server = wizard.definition();
-                validate_new_server(&server)?;
-                wizard.input.clear();
-                wizard.step = AddStep::BearerEnvironmentVariable;
-            }
-            AddStep::BearerEnvironmentVariable => {
-                wizard.bearer_token_env_var = nonempty(wizard.input.trim());
-                let server = wizard.definition();
-                validate_new_server(&server)?;
-                wizard.input.clear();
-                wizard.step = AddStep::AssignProfiles;
-            }
-            AddStep::Transport | AddStep::AssignProfiles => {}
-        }
-        Ok(())
     }
 
     fn validate_with_codex(&mut self) {

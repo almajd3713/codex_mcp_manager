@@ -4,7 +4,8 @@ use std::fs;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use tempfile::tempdir;
 
-use super::{App, Outcome, Screen, format_shell_words, parse_shell_words};
+use super::wizard::{format_shell_words, parse_shell_words};
+use super::{App, Outcome, Screen};
 use crate::config::ConfigStore;
 use crate::launcher::LaunchTarget;
 
@@ -124,19 +125,19 @@ fn add_server_wizard_creates_disabled_base_definition_and_profile_override() {
     }
     app.handle_key(key(KeyCode::Enter)).unwrap();
     app.handle_key(key(KeyCode::Enter)).unwrap();
+    assert!(matches!(app.screen, Screen::ServerForm(_)));
+    app.handle_key(key(KeyCode::Enter)).unwrap();
     for character in "npx".chars() {
         app.handle_key(key(KeyCode::Char(character))).unwrap();
     }
+    app.handle_key(key(KeyCode::Enter)).unwrap();
+    app.handle_key(key(KeyCode::Down)).unwrap();
     app.handle_key(key(KeyCode::Enter)).unwrap();
     for character in "-y @example/mcp".chars() {
         app.handle_key(key(KeyCode::Char(character))).unwrap();
     }
     app.handle_key(key(KeyCode::Enter)).unwrap();
-    app.handle_key(key(KeyCode::Enter)).unwrap();
-    for character in "EXAMPLE_TOKEN".chars() {
-        app.handle_key(key(KeyCode::Char(character))).unwrap();
-    }
-    app.handle_key(key(KeyCode::Enter)).unwrap();
+    app.handle_key(key(KeyCode::Char('s'))).unwrap();
     app.handle_key(key(KeyCode::Char(' '))).unwrap();
     app.handle_key(key(KeyCode::Char('s'))).unwrap();
 
@@ -196,29 +197,45 @@ fn edit_server_flow_requires_confirmation_and_updates_prefilled_fields() {
     app.handle_key(key(KeyCode::Char('e'))).unwrap();
     assert!(matches!(app.screen, Screen::ConfirmEdit { .. }));
     app.handle_key(key(KeyCode::Char('y'))).unwrap();
-    let Screen::EditServer(wizard) = &app.screen else {
-        panic!("expected server editor");
+    let Screen::ServerForm(form) = &app.screen else {
+        panic!("expected server form");
     };
-    assert_eq!(wizard.input, "old-command");
+    assert_eq!(
+        form.editable.server.definition,
+        crate::config::ServerDefinition::Stdio {
+            command: "old-command".to_owned(),
+            args: vec!["--old".to_owned()],
+            cwd: Some("/old".to_owned()),
+            env_vars: vec!["OLD_TOKEN".to_owned()],
+        }
+    );
 
     let clear = KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL);
+    app.handle_key(key(KeyCode::Enter)).unwrap();
     app.handle_key(clear).unwrap();
     for character in "new-command".chars() {
         app.handle_key(key(KeyCode::Char(character))).unwrap();
     }
+    app.handle_key(key(KeyCode::Enter)).unwrap();
+    app.handle_key(key(KeyCode::Down)).unwrap();
     app.handle_key(key(KeyCode::Enter)).unwrap();
     app.handle_key(clear).unwrap();
     for character in r#""two words" --new"#.chars() {
         app.handle_key(key(KeyCode::Char(character))).unwrap();
     }
     app.handle_key(key(KeyCode::Enter)).unwrap();
+    app.handle_key(key(KeyCode::Down)).unwrap();
+    app.handle_key(key(KeyCode::Enter)).unwrap();
     app.handle_key(clear).unwrap();
+    app.handle_key(key(KeyCode::Enter)).unwrap();
+    app.handle_key(key(KeyCode::Down)).unwrap();
     app.handle_key(key(KeyCode::Enter)).unwrap();
     app.handle_key(clear).unwrap();
     for character in "NEW_TOKEN".chars() {
         app.handle_key(key(KeyCode::Char(character))).unwrap();
     }
     app.handle_key(key(KeyCode::Enter)).unwrap();
+    app.handle_key(key(KeyCode::Char('s'))).unwrap();
 
     assert!(matches!(app.screen, Screen::Inventory { .. }));
     let rendered = fs::read_to_string(temp.path().join("config.toml")).unwrap();
@@ -228,4 +245,59 @@ fn edit_server_flow_requires_confirmation_and_updates_prefilled_fields() {
     assert!(!rendered.contains("cwd ="));
     assert!(rendered.contains("enabled = false"));
     assert!(rendered.contains("startup_timeout_sec = 30"));
+}
+
+#[test]
+fn server_form_edits_runtime_and_tool_policy_options() {
+    let temp = tempdir().unwrap();
+    fs::write(
+        temp.path().join("config.toml"),
+        "[mcp_servers.local]\ncommand = \"server\"\n",
+    )
+    .unwrap();
+    let store = ConfigStore::new(temp.path().to_owned());
+    let mut app = App::new(&store, OsStr::new("codex"), None).unwrap();
+
+    app.handle_key(key(KeyCode::Char('m'))).unwrap();
+    app.handle_key(key(KeyCode::Char('e'))).unwrap();
+    app.handle_key(key(KeyCode::Char('y'))).unwrap();
+
+    for _ in 0..4 {
+        app.handle_key(key(KeyCode::Down)).unwrap();
+    }
+    app.handle_key(key(KeyCode::Char(' '))).unwrap();
+
+    app.handle_key(key(KeyCode::Down)).unwrap();
+    app.handle_key(key(KeyCode::Enter)).unwrap();
+    for character in "12.5".chars() {
+        app.handle_key(key(KeyCode::Char(character))).unwrap();
+    }
+    app.handle_key(key(KeyCode::Enter)).unwrap();
+
+    app.handle_key(key(KeyCode::Down)).unwrap();
+    app.handle_key(key(KeyCode::Enter)).unwrap();
+    for character in "90".chars() {
+        app.handle_key(key(KeyCode::Char(character))).unwrap();
+    }
+    app.handle_key(key(KeyCode::Enter)).unwrap();
+
+    app.handle_key(key(KeyCode::Down)).unwrap();
+    app.handle_key(key(KeyCode::Char(' '))).unwrap();
+
+    app.handle_key(key(KeyCode::Down)).unwrap();
+    app.handle_key(key(KeyCode::Enter)).unwrap();
+    app.handle_key(key(KeyCode::Char('a'))).unwrap();
+    for character in "search".chars() {
+        app.handle_key(key(KeyCode::Char(character))).unwrap();
+    }
+    app.handle_key(key(KeyCode::Enter)).unwrap();
+    app.handle_key(key(KeyCode::Esc)).unwrap();
+    app.handle_key(key(KeyCode::Char('s'))).unwrap();
+
+    let rendered = fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    assert!(rendered.contains("required = true"));
+    assert!(rendered.contains("startup_timeout_sec = 12.5"));
+    assert!(rendered.contains("tool_timeout_sec = 90.0"));
+    assert!(rendered.contains("default_tools_approval_mode = \"auto\""));
+    assert!(rendered.contains("enabled_tools = [\"search\"]"));
 }

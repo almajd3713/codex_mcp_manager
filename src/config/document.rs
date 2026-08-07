@@ -278,9 +278,31 @@ pub(super) fn insert_server_definition(
             }
         }
     }
+    insert_server_options(&mut table, &server.options);
     table["enabled"] = value(false);
     mcp_servers.insert(&server.name, Item::Table(table));
     Ok(())
+}
+
+fn insert_server_options(table: &mut Table, options: &McpServerOptions) {
+    if let Some(required) = options.required {
+        table["required"] = value(required);
+    }
+    if let Some(timeout) = options.startup_timeout_sec {
+        table["startup_timeout_sec"] = value(timeout);
+    }
+    if let Some(timeout) = options.tool_timeout_sec {
+        table["tool_timeout_sec"] = value(timeout);
+    }
+    if let Some(tools) = &options.enabled_tools {
+        table["enabled_tools"] = Item::Value(Value::Array(string_array(tools)));
+    }
+    if let Some(tools) = &options.disabled_tools {
+        table["disabled_tools"] = Item::Value(Value::Array(string_array(tools)));
+    }
+    if let Some(mode) = options.default_tools_approval_mode {
+        table["default_tools_approval_mode"] = value(mode.as_str());
+    }
 }
 
 pub(super) fn string_array(values: &[String]) -> Array {
@@ -332,6 +354,44 @@ pub fn validate_new_server(server: &NewServer) -> Result<(), StoreError> {
             if let Some(variable) = bearer_token_env_var {
                 validate_env_var(variable)?;
             }
+        }
+    }
+    validate_server_options(&server.options)?;
+    Ok(())
+}
+
+pub(super) fn validate_server_options(options: &McpServerOptions) -> Result<(), StoreError> {
+    for (label, timeout) in [
+        ("startup timeout", options.startup_timeout_sec),
+        ("tool timeout", options.tool_timeout_sec),
+    ] {
+        if timeout.is_some_and(|timeout| !timeout.is_finite() || timeout < 0.0) {
+            return Err(StoreError::InvalidServer(format!(
+                "{label} must be a finite, non-negative number"
+            )));
+        }
+    }
+    if let Some(tools) = &options.enabled_tools {
+        validate_tool_names("enabled tools", tools)?;
+    }
+    if let Some(tools) = &options.disabled_tools {
+        validate_tool_names("disabled tools", tools)?;
+    }
+    Ok(())
+}
+
+fn validate_tool_names(label: &str, tools: &[String]) -> Result<(), StoreError> {
+    let mut seen = BTreeSet::new();
+    for tool in tools {
+        if tool.trim().is_empty() {
+            return Err(StoreError::InvalidServer(format!(
+                "{label} cannot contain a blank tool name"
+            )));
+        }
+        if !seen.insert(tool) {
+            return Err(StoreError::InvalidServer(format!(
+                "{label} cannot contain duplicate tool names"
+            )));
         }
     }
     Ok(())

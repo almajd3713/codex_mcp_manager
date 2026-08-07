@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::io;
 use std::path::PathBuf;
 
@@ -86,10 +87,85 @@ pub enum ServerDefinition {
     },
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum ToolApprovalMode {
+    Auto,
+    Prompt,
+    Writes,
+    Approve,
+}
+
+impl ToolApprovalMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Prompt => "prompt",
+            Self::Writes => "writes",
+            Self::Approve => "approve",
+        }
+    }
+
+    pub fn cycle(self) -> Self {
+        match self {
+            Self::Auto => Self::Prompt,
+            Self::Prompt => Self::Writes,
+            Self::Writes => Self::Approve,
+            Self::Approve => Self::Auto,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct McpServerOptions {
+    pub required: Option<bool>,
+    pub startup_timeout_sec: Option<f64>,
+    pub tool_timeout_sec: Option<f64>,
+    pub enabled_tools: Option<Vec<String>>,
+    pub disabled_tools: Option<Vec<String>>,
+    pub default_tools_approval_mode: Option<ToolApprovalMode>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum ServerField {
+    Command,
+    Arguments,
+    WorkingDirectory,
+    EnvironmentVariables,
+    Url,
+    BearerEnvironmentVariable,
+    Required,
+    StartupTimeout,
+    ToolTimeout,
+    EnabledTools,
+    DisabledTools,
+    DefaultToolsApprovalMode,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StartupTimeoutSource {
+    None,
+    Seconds,
+    Milliseconds,
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub struct NewServer {
     pub name: String,
     pub definition: ServerDefinition,
+    pub options: McpServerOptions,
+}
+
+#[derive(Clone, Debug)]
+pub struct EditableServer {
+    pub server: NewServer,
+    pub locked_fields: BTreeSet<ServerField>,
+    pub startup_timeout_source: StartupTimeoutSource,
+}
+
+#[derive(Clone, Debug)]
+pub struct ServerUpdate {
+    pub editable: EditableServer,
+    pub dirty_fields: BTreeSet<ServerField>,
 }
 
 #[derive(Debug, Error)]

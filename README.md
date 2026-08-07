@@ -80,25 +80,42 @@ Source inspector:
 - `Home`/`End`: jump to the beginning or end
 - `q` or `Esc`: return to the originating screen
 
-The add-server wizard collects:
+The add-server flow collects a safe name and transport, then opens the same
+sectioned form used for editing existing servers. The form includes:
 
-- A safe server name
-- Local executable, shell-style argument list, optional working directory,
-  and inherited environment-variable names; or
-- Remote HTTP URL and an optional bearer-token environment-variable name
-- Profiles in which the new server should be enabled
+- Connection fields: local executable, shell-style arguments, optional working
+  directory, and inherited environment-variable names; or a remote HTTP URL
+  and optional bearer-token environment-variable name
+- Runtime fields: `required`, `startup_timeout_sec`, and `tool_timeout_sec`
+- Tool-policy fields: `default_tools_approval_mode`, `enabled_tools`, and
+  `disabled_tools`
+- Profiles in which a newly created server should be enabled
+
+Server form keys:
+
+- `j`/`k` or arrow keys: navigate fields
+- `Enter`: edit an input field or open a tool list
+- `Space` or left/right: cycle optional boolean and approval-mode values
+- `Delete` or `Backspace`: unset the selected optional field
+- `s`: validate and save the form
+- `Esc`: discard the in-memory changes
+
+Inside an enabled/disabled tool list, `a` adds a tool, `Enter` or `e` edits
+one, and `d` or `Delete` removes one. `Space` toggles between an unset list and
+an explicit empty list; those have different meanings and are preserved
+separately.
 
 New definitions are always written to `config.toml` with `enabled = false`.
 The tool then writes explicit `enabled = true` overrides only to the profiles
 selected in the wizard. This prevents a newly added server from silently
 appearing in Base or unrelated profiles.
 
-The server editor keeps the existing name and transport. For local stdio
-servers it updates the executable, arguments, optional working directory, and
-inherited environment-variable names. For remote servers it updates the URL
-and optional bearer-token environment-variable name. Existing values are
-prefilled; use `Ctrl-U` to clear a field before replacing it. The final field
-is saved with `Enter`.
+The server editor keeps the existing name, transport, and Base enablement.
+Existing values are prefilled; use `Ctrl-U` to clear a text input before
+replacing it. Only fields changed in the form are written. A legacy
+`startup_timeout_ms` value is displayed in seconds but remains stored in
+milliseconds until that field is edited; editing it writes the canonical
+`startup_timeout_sec` field.
 
 `Inherited` means the profile has no `enabled` override for that server. The
 effective state then comes from `config.toml`; if neither layer contains an
@@ -116,9 +133,11 @@ effective state then comes from `config.toml`; if neither layer contains an
 - Profile changes preserve unrelated settings and TOML comments.
 - Adding a server preserves unrelated base settings and comments and uses the
   same atomic-write protections as profile edits.
-- Editing a server changes only its guided transport fields. Base enablement,
-  comments, headers, timeout settings, nested environment tables, and other
-  advanced TOML fields are preserved.
+- Editing a server changes only fields marked dirty in the form. Base
+  enablement, comments, headers, nested environment tables, and other advanced
+  TOML fields are preserved. Structured `env_vars` values that cannot be
+  represented by the simple name list appear read-only, without preventing
+  edits to the other supported fields.
 - Saves use a same-directory temporary file and atomic rename. A save is
   rejected if another process changed the Base config or profile after it was
   opened.

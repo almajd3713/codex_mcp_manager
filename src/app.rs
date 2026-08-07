@@ -17,6 +17,7 @@ mod inventory;
 mod profiles;
 mod render;
 mod server_editor;
+mod server_form;
 mod terminal;
 mod wizard;
 
@@ -24,11 +25,9 @@ mod wizard;
 mod tests;
 
 use render::render;
+use server_form::{FieldInputState, ServerForm, ToolListState, ToolNameInputState};
 use terminal::Tui;
-use wizard::{
-    AddStep, AddWizard, EditWizard, WizardTransport, format_shell_words, nonempty, parse_env_vars,
-    parse_shell_words,
-};
+use wizard::{AddStep, AddWizard, WizardTransport};
 
 const TICK_RATE: Duration = Duration::from_millis(250);
 
@@ -97,7 +96,10 @@ enum Screen {
         selected: usize,
     },
     AddServer(AddWizard),
-    EditServer(EditWizard),
+    ServerForm(ServerForm),
+    FieldInput(FieldInputState),
+    ToolList(ToolListState),
+    ToolNameInput(ToolNameInputState),
     Input(InputState),
     ConfirmDelete {
         profile_name: String,
@@ -160,7 +162,10 @@ impl<'a> App<'a> {
             Screen::Editor(editor) => self.handle_editor_key(key, editor),
             Screen::Inventory { selected } => self.handle_inventory_key(key, selected),
             Screen::AddServer(wizard) => self.handle_add_server_key(key, wizard),
-            Screen::EditServer(wizard) => self.handle_edit_server_key(key, wizard),
+            Screen::ServerForm(form) => self.handle_server_form_key(key, form),
+            Screen::FieldInput(input) => self.handle_field_input_key(key, input),
+            Screen::ToolList(list) => self.handle_tool_list_key(key, list),
+            Screen::ToolNameInput(input) => self.handle_tool_name_input_key(key, input),
             Screen::Input(input) => self.handle_input_key(key, input),
             Screen::ConfirmDelete { profile_name } => self.handle_delete_key(key, &profile_name),
             Screen::ConfirmInspect { target, back } => {

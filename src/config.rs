@@ -17,8 +17,9 @@ mod tests;
 
 pub use document::{validate_new_server, validate_server_name};
 pub use model::{
-    Catalog, Fingerprint, NewServer, OverrideState, ProfileRecord, ServerDefinition, ServerOrigin,
-    ServerView, StoreError, TransportKind,
+    Catalog, EditableServer, Fingerprint, McpServerOptions, NewServer, OverrideState,
+    ProfileRecord, ServerDefinition, ServerField, ServerOrigin, ServerUpdate, ServerView,
+    StartupTimeoutSource, StoreError, ToolApprovalMode, TransportKind,
 };
 
 use document::*;
@@ -167,7 +168,7 @@ impl ConfigStore {
         Ok(failed_profiles)
     }
 
-    pub fn load_server_definition(&self, name: &str) -> Result<NewServer, StoreError> {
+    pub fn load_server_definition(&self, name: &str) -> Result<EditableServer, StoreError> {
         validate_server_name(name)?;
         let path = self.home.join("config.toml");
         let loaded = read_optional_document(&path)?;
@@ -176,10 +177,9 @@ impl ConfigStore {
 
     pub fn update_server(
         &self,
-        server: &NewServer,
+        update: &ServerUpdate,
         expected_base: Fingerprint,
     ) -> Result<(), StoreError> {
-        validate_new_server(server)?;
         let path = self.home.join("config.toml");
         let loaded = read_optional_document(&path)?;
         if loaded.fingerprint != expected_base {
@@ -187,7 +187,7 @@ impl ConfigStore {
         }
 
         let mut document = loaded.document;
-        update_server_definition(&mut document, server, &path)?;
+        update_server_definition(&mut document, update, &path)?;
         let rendered = document.to_string();
         if rendered.as_bytes() == loaded.raw.as_slice() {
             return Ok(());

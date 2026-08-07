@@ -4,11 +4,12 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap};
 
-use crate::config::{OverrideState, ServerOrigin, TransportKind};
+use crate::config::{OverrideState, ServerField, ServerOrigin, TransportKind};
 
+use super::server_form::{form_field_values, tool_values};
 use super::{
-    AddStep, AddWizard, App, EditWizard, EditorState, InputState, InspectBack, InspectorState,
-    Screen, WizardTransport,
+    AddStep, AddWizard, App, EditorState, FieldInputState, InputState, InspectBack, InspectorState,
+    Screen, ServerForm, ToolListState, ToolNameInputState, WizardTransport,
 };
 
 pub(super) fn render(frame: &mut Frame<'_>, app: &App<'_>) {
@@ -44,8 +45,11 @@ pub(super) fn render(frame: &mut Frame<'_>, app: &App<'_>) {
         Screen::AddServer(wizard) => {
             render_add_server(frame, chunks[1], wizard);
         }
-        Screen::EditServer(wizard) => {
-            render_edit_server(frame, chunks[1], wizard);
+        Screen::ServerForm(form) | Screen::FieldInput(FieldInputState { form, .. }) => {
+            render_server_form(frame, chunks[1], app, form);
+        }
+        Screen::ToolList(list) | Screen::ToolNameInput(ToolNameInputState { list, .. }) => {
+            render_tool_list(frame, chunks[1], list);
         }
         Screen::ConfirmInspect { back, .. } => match back {
             InspectBack::Profiles => {
@@ -79,7 +83,14 @@ pub(super) fn render(frame: &mut Frame<'_>, app: &App<'_>) {
             "↑/↓ or s/h choose transport  Enter continue  Esc cancel"
         }
         Screen::AddServer(_) => "Enter continue  Ctrl-U clear  Esc cancel",
-        Screen::EditServer(_) => "Enter continue/save  Ctrl-U clear field  Esc cancel",
+        Screen::ServerForm(_) => {
+            "↑/↓ fields  Enter edit  Space cycle  Delete unset  s save  Esc cancel"
+        }
+        Screen::FieldInput(_) => "Enter apply  Ctrl-U clear  Esc keep previous value",
+        Screen::ToolList(_) => {
+            "↑/↓ tools  a add  Enter/e edit  d delete  Space unset/empty  Esc fields"
+        }
+        Screen::ToolNameInput(_) => "Enter apply tool name  Ctrl-U clear  Esc cancel",
         Screen::Input(_) => "Enter confirm  Ctrl-U clear  Esc cancel",
         Screen::ConfirmDelete { .. } => "y move to trash  n/Esc cancel",
         Screen::ConfirmInspect { .. } => "y show raw TOML  n/Esc cancel",
@@ -95,6 +106,8 @@ pub(super) fn render(frame: &mut Frame<'_>, app: &App<'_>) {
 
     match &app.screen {
         Screen::Input(input) => render_input(frame, area, input),
+        Screen::FieldInput(input) => render_field_input(frame, area, input),
+        Screen::ToolNameInput(input) => render_tool_name_input(frame, area, input),
         Screen::ConfirmDelete { profile_name } => {
             render_confirmation(frame, area, profile_name);
         }
@@ -195,75 +208,6 @@ fn render_add_server(frame: &mut Frame<'_>, area: Rect, wizard: &AddWizard) {
         }
         _ => render_wizard_input(frame, area, wizard),
     }
-}
-
-fn render_edit_server(frame: &mut Frame<'_>, area: Rect, wizard: &EditWizard) {
-    let (title, help) = match wizard.step {
-        AddStep::Command => (
-            " Local server — executable ",
-            "Existing value is prefilled. Use Ctrl-U to replace it.",
-        ),
-        AddStep::Arguments => (
-            " Local server — arguments (optional) ",
-            "Shell-style quoting is supported. Unknown TOML fields are preserved.",
-        ),
-        AddStep::WorkingDirectory => (
-            " Local server — working directory (optional) ",
-            "Clear to inherit the Codex working directory.",
-        ),
-        AddStep::EnvironmentVariables => (
-            " Local server — inherited environment variables (optional) ",
-            "Comma- or space-separated names; Enter validates and saves.",
-        ),
-        AddStep::Url => (
-            " Remote server — HTTP URL ",
-            "Existing value is prefilled. Use Ctrl-U to replace it.",
-        ),
-        AddStep::BearerEnvironmentVariable => (
-            " Remote server — bearer-token environment variable (optional) ",
-            "Enter a variable name, never a token value; Enter validates and saves.",
-        ),
-        AddStep::Name | AddStep::Transport | AddStep::AssignProfiles => unreachable!(),
-    };
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Min(3),
-            Constraint::Length(3),
-            Constraint::Length(2),
-        ])
-        .split(area);
-    frame.render_widget(
-        Paragraph::new(format!(
-            "Editing '{}'. Transport, name, Base enablement, and advanced fields remain unchanged.",
-            wizard.name
-        ))
-        .style(Style::default().fg(Color::DarkGray))
-        .alignment(Alignment::Center),
-        chunks[0],
-    );
-    frame.render_widget(
-        Paragraph::new(wizard.input.as_str())
-            .block(
-                Block::default()
-                    .title(format!(" Edit '{0}' —{title}", wizard.name))
-                    .borders(Borders::ALL),
-            )
-            .wrap(Wrap { trim: false }),
-        chunks[1],
-    );
-    frame.render_widget(
-        Paragraph::new(help)
-            .style(Style::default().fg(Color::DarkGray))
-            .alignment(Alignment::Center),
-        chunks[2],
-    );
-    let cursor_x = chunks[1]
-        .x
-        .saturating_add(1)
-        .saturating_add(wizard.input.len() as u16)
-        .min(chunks[1].right().saturating_sub(2));
-    frame.set_cursor_position((cursor_x, chunks[1].y.saturating_add(1)));
 }
 
 fn render_transport_choice(frame: &mut Frame<'_>, area: Rect, wizard: &AddWizard) {
@@ -378,30 +322,6 @@ fn render_wizard_input(frame: &mut Frame<'_>, area: Rect, wizard: &AddWizard) {
             " Add MCP server — name ",
             "Letters, numbers, hyphens, and underscores only.",
         ),
-        AddStep::Command => (
-            " Local server — executable ",
-            "Executable name or absolute path, for example npx.",
-        ),
-        AddStep::Arguments => (
-            " Local server — arguments (optional) ",
-            "Shell-style quoting is supported. Do not place secrets here; use environment variables.",
-        ),
-        AddStep::WorkingDirectory => (
-            " Local server — working directory (optional) ",
-            "Leave empty to inherit the Codex working directory.",
-        ),
-        AddStep::EnvironmentVariables => (
-            " Local server — inherited environment variables (optional) ",
-            "Comma- or space-separated variable names; values are never entered here.",
-        ),
-        AddStep::Url => (
-            " Remote server — HTTP URL ",
-            "Must begin with https:// or http://.",
-        ),
-        AddStep::BearerEnvironmentVariable => (
-            " Remote server — bearer-token environment variable (optional) ",
-            "Enter a variable name such as MY_MCP_TOKEN, never the token value.",
-        ),
         AddStep::Transport | AddStep::AssignProfiles => {
             unreachable!()
         }
@@ -445,6 +365,199 @@ fn render_wizard_input(frame: &mut Frame<'_>, area: Rect, wizard: &AddWizard) {
         .saturating_add(wizard.input.len() as u16)
         .min(chunks[1].right().saturating_sub(2));
     frame.set_cursor_position((cursor_x, chunks[1].y.saturating_add(1)));
+}
+
+fn render_server_form(frame: &mut Frame<'_>, area: Rect, app: &App<'_>, form: &ServerForm) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(2), Constraint::Min(4)])
+        .split(area);
+    let base_state = app
+        .catalog
+        .base_servers
+        .iter()
+        .find(|server| server.name == form.editable.server.name)
+        .map(|server| {
+            if server.effective_enabled {
+                "enabled"
+            } else {
+                "disabled"
+            }
+        })
+        .unwrap_or("will be disabled after creation");
+    frame.render_widget(
+        Paragraph::new(format!(
+            "{}  •  Base: {base_state}  •  transport and Base enablement are read-only here",
+            form.editable.server.name
+        ))
+        .style(Style::default().fg(Color::DarkGray))
+        .alignment(Alignment::Center),
+        chunks[0],
+    );
+
+    let values = form_field_values(form);
+    let mut items = Vec::new();
+    let mut selected_row = 0;
+    let mut previous_section = "";
+    for (index, field) in form.fields.iter().enumerate() {
+        let section = field_section(*field);
+        if section != previous_section {
+            items.push(ListItem::new(Span::styled(
+                format!("  {section}"),
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            )));
+            previous_section = section;
+        }
+        if index == form.selected {
+            selected_row = items.len();
+        }
+        let dirty = if form.dirty_fields.contains(field) {
+            "*"
+        } else {
+            " "
+        };
+        let locked = if form.is_locked(*field) {
+            "  [read-only]"
+        } else {
+            ""
+        };
+        items.push(ListItem::new(Line::from(vec![
+            Span::styled(
+                format!("{dirty} {:<28}", field_label(*field)),
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(values.get(field).cloned().unwrap_or_default()),
+            Span::styled(locked, Style::default().fg(Color::Yellow)),
+        ])));
+    }
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .title(" MCP server fields — * changed ")
+                .borders(Borders::ALL),
+        )
+        .highlight_style(
+            Style::default()
+                .bg(Color::DarkGray)
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        )
+        .highlight_symbol("› ");
+    let mut state = ListState::default();
+    state.select(Some(selected_row));
+    frame.render_stateful_widget(list, chunks[1], &mut state);
+}
+
+fn render_tool_list(frame: &mut Frame<'_>, area: Rect, list: &ToolListState) {
+    let configured = match list.field {
+        ServerField::EnabledTools => &list.form.editable.server.options.enabled_tools,
+        ServerField::DisabledTools => &list.form.editable.server.options.disabled_tools,
+        _ => unreachable!(),
+    };
+    let status = match configured {
+        None => "unset — Codex default behavior",
+        Some(values) if values.is_empty() => "explicit empty list",
+        Some(_) => "explicit tool list",
+    };
+    let values = tool_values(&list.form, list.field);
+    let items = if values.is_empty() {
+        vec![ListItem::new(Span::styled(
+            format!("No entries ({status}). Press a to add or Space to toggle unset/empty."),
+            Style::default().fg(Color::DarkGray),
+        ))]
+    } else {
+        values
+            .iter()
+            .map(|value| ListItem::new(value.clone()))
+            .collect()
+    };
+    let widget = List::new(items)
+        .block(
+            Block::default()
+                .title(format!(" {} — {status} ", field_label(list.field)))
+                .borders(Borders::ALL),
+        )
+        .highlight_style(
+            Style::default()
+                .bg(Color::DarkGray)
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        )
+        .highlight_symbol("› ");
+    let mut state = ListState::default();
+    if !values.is_empty() {
+        state.select(Some(list.selected));
+    }
+    frame.render_stateful_widget(widget, area, &mut state);
+}
+
+fn render_field_input(frame: &mut Frame<'_>, area: Rect, input: &FieldInputState) {
+    render_text_popup(
+        frame,
+        area,
+        &format!(" {} ", field_label(input.field)),
+        &input.value,
+    );
+}
+
+fn render_tool_name_input(frame: &mut Frame<'_>, area: Rect, input: &ToolNameInputState) {
+    let action = if input.edit_index.is_some() {
+        "Edit"
+    } else {
+        "Add"
+    };
+    render_text_popup(frame, area, &format!(" {action} tool name "), &input.value);
+}
+
+fn render_text_popup(frame: &mut Frame<'_>, area: Rect, title: &str, value: &str) {
+    let popup = centered_rect(area, 68, 5);
+    frame.render_widget(Clear, popup);
+    frame.render_widget(
+        Paragraph::new(value)
+            .block(Block::default().title(title).borders(Borders::ALL))
+            .wrap(Wrap { trim: false }),
+        popup,
+    );
+    let cursor_x = popup
+        .x
+        .saturating_add(1)
+        .saturating_add(value.len() as u16)
+        .min(popup.right().saturating_sub(2));
+    frame.set_cursor_position((cursor_x, popup.y.saturating_add(1)));
+}
+
+fn field_section(field: ServerField) -> &'static str {
+    match field {
+        ServerField::Command
+        | ServerField::Arguments
+        | ServerField::WorkingDirectory
+        | ServerField::EnvironmentVariables
+        | ServerField::Url
+        | ServerField::BearerEnvironmentVariable => "CONNECTION",
+        ServerField::Required | ServerField::StartupTimeout | ServerField::ToolTimeout => "RUNTIME",
+        ServerField::EnabledTools
+        | ServerField::DisabledTools
+        | ServerField::DefaultToolsApprovalMode => "TOOL POLICY",
+    }
+}
+
+fn field_label(field: ServerField) -> &'static str {
+    match field {
+        ServerField::Command => "Command",
+        ServerField::Arguments => "Arguments",
+        ServerField::WorkingDirectory => "Working directory",
+        ServerField::EnvironmentVariables => "Inherited env vars",
+        ServerField::Url => "URL",
+        ServerField::BearerEnvironmentVariable => "Bearer token env var",
+        ServerField::Required => "Required",
+        ServerField::StartupTimeout => "Startup timeout",
+        ServerField::ToolTimeout => "Tool timeout",
+        ServerField::EnabledTools => "Enabled tools",
+        ServerField::DisabledTools => "Disabled tools",
+        ServerField::DefaultToolsApprovalMode => "Default approval mode",
+    }
 }
 
 fn render_profiles(frame: &mut Frame<'_>, area: Rect, app: &App<'_>) {
